@@ -1,0 +1,87 @@
+[
+  {
+    "paragraph_index": 1,
+    "changes": [
+      {
+        "original": "在过去的一个季度里面",
+        "revised": "本季度内",
+        "reason": "冗余表达精简"
+      },
+      {
+        "original": "基本上完成了所有的目标任务",
+        "revised": "全面完成了各项目标任务",
+        "reason": "「基本上」语气弱，实际已完成应用肯定语气"
+      },
+      {
+        "original": "整体来说表现还是不错的",
+        "revised": "整体表现良好",
+        "reason": "口语化改为书面语"
+      }
+    ]
+  },
+  {
+    "paragraph_index": 2,
+    "changes": [
+      {
+        "original": "实现了大概1200万的收入",
+        "revised": "实现收入约1200万元",
+        "reason": "「大概」改为「约」，补充单位"
+      },
+      {
+        "original": "增长了差不多15%左右",
+        "revised": "同比增长约15%",
+        "reason": "「差不多...左右」语义重复"
+      },
+      {
+        "original": "这个成绩说明我们的市场策略基本上是对的",
+        "revised": "验证了当前市场策略的有效性",
+        "reason": "更专业的表述"
+      }
+    ]
+  },
+  {
+    "paragraph_index": 3,
+    "changes": [
+      {
+        "original": "非常努力的推进了",
+        "revised": "稳步推进了",
+        "reason": "「非常努力的」主观口语化，「稳步」更客观"
+      },
+      {
+        "original": "还有一个因为一些技术问题推迟了",
+        "revised": "另有一个因技术难点延期交付",
+        "reason": "更正式的表达"
+      }
+    ]
+  },
+  {
+    "paragraph_index": 4,
+    "changes": [
+      {
+        "original": "根据我们做的调查",
+        "revised": "据调研数据显示",
+        "reason": "更简洁正式"
+      },
+      {
+        "original": "这个数字说明我们的服务质量还是比较好的",
+        "revised": "体现了团队在服务品质方面的持续优势",
+        "reason": "避免「还是比较好的」这种弱语气"
+      }
+    ]
+  },
+  {
+    "paragraph_index": 5,
+    "changes": [
+      {
+        "original": "我们将要继续努力，争取把业绩再提升一下",
+        "revised": "我们将持续发力，力争实现业绩的进一步突破",
+        "reason": "「提升一下」过于随意"
+      },
+      {
+        "original": "同时也要注意团队成员的工作生活平衡问题",
+        "revised": "同时关注团队成员的工作与生活平衡",
+        "reason": "去掉冗余词"
+      }
+    ]
+  }
+]

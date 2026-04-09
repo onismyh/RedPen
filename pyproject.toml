@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redpen"
+version = "0.1.0"
+description = "Word document revision CLI — track changes toolkit for AI agents"
+requires-python = ">=3.10"
+dependencies = [
+    "docx-revisions>=0.1.4",
+    "python-docx>=1.1.0",
+    "lxml>=5.0",
+    "typer>=0.12",
+    "rich>=13.0",
+    "tomli>=2.0; python_version<'3.11'",
+]
+
+[project.scripts]
+redpen = "redpen.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
