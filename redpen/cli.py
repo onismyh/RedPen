@@ -19,11 +19,9 @@ app = typer.Typer(
 console = Console()
 
 
-def _resolve_output(input_path: str, output: str | None, suffix: str = "_revised") -> str:
-    if output:
-        return output
-    p = Path(input_path)
-    return str(p.with_stem(p.stem + suffix))
+def _resolve_output(input_path: str, output: str | None) -> str:
+    """If -o is given use it, otherwise overwrite the input file (in-place)."""
+    return output if output else input_path
 
 
 # ---------------------------------------------------------------------------
@@ -36,27 +34,33 @@ def read(
 ) -> None:
     """Extract document paragraphs as JSON (default) or plain text.
 
-    Default output is a JSON array:
-
-        [{"index": 0, "text": "..."}, ...]
-
-    Agents should parse this, decide edits, then call `redpen apply`.
+    If the document already has tracked changes (from a previous round),
+    the text shown is the "accepted" version — i.e. what the document
+    looks like after accepting all prior revisions.  This lets agents
+    make further edits on the latest state.
     """
-    from docx import Document
+    from docx_revisions import RevisionDocument
 
-    doc = Document(input_file)
-    paragraphs = [
-        {"index": i, "text": p.text}
-        for i, p in enumerate(doc.paragraphs)
-        if p.text.strip()
-    ]
+    rdoc = RevisionDocument(input_file)
+    paragraphs = []
+    for i, para in enumerate(rdoc.paragraphs):
+        text = para.accepted_text
+        if text.strip():
+            paragraphs.append({"index": i, "text": text})
+
+    has_changes = len(rdoc.track_changes) > 0
 
     if plain:
         for p in paragraphs:
             console.print(f"[{p['index']}] {p['text']}")
     else:
-        # Raw JSON to stdout so agents can capture it
         print(json_mod.dumps(paragraphs, ensure_ascii=False, indent=2))
+
+    if has_changes:
+        Console(stderr=True).print(
+            "[dim](document has existing tracked changes — "
+            "text shown is the accepted/latest version)[/dim]"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +154,7 @@ def replace(
     """Find and replace with revision tracking."""
     from .revision_writer import find_and_replace_tracked
 
-    out_path = _resolve_output(input_file, output, suffix="_replaced")
+    out_path = _resolve_output(input_file, output)
     rdoc, count = find_and_replace_tracked(input_file, search, replacement, author=author)
 
     if count == 0:
@@ -174,7 +178,7 @@ def diff(
     """Compare two documents, output a revision-tracked docx."""
     from .differ import diff_documents
 
-    out_path = _resolve_output(old_file, output, suffix="_diff")
+    out_path = _resolve_output(old_file, output)
     rdoc = diff_documents(old_file, new_file, author=author)
     rdoc.save(out_path)
     console.print(f"Diff complete -> {out_path}")
@@ -243,7 +247,7 @@ def accept(
     """Accept all tracked changes, produce a clean document."""
     from .revision_writer import accept_all
 
-    out_path = _resolve_output(input_file, output, suffix="_clean")
+    out_path = _resolve_output(input_file, output)
     rdoc = accept_all(input_file)
     rdoc.save(out_path)
     console.print(f"All changes accepted -> {out_path}")
@@ -260,7 +264,7 @@ def reject(
     """Reject all tracked changes, restore original text."""
     from .revision_writer import reject_all
 
-    out_path = _resolve_output(input_file, output, suffix="_original")
+    out_path = _resolve_output(input_file, output)
     rdoc = reject_all(input_file)
     rdoc.save(out_path)
     console.print(f"All changes rejected -> {out_path}")
