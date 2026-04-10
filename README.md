@@ -22,14 +22,14 @@ Paste this to Claude Code / Codex / any agent:
 
 ```
 Install RedPen — a Word track changes CLI tool.
-Run: git clone https://github.com/yourname/redpen.git ~/redpen && pip install -e ~/redpen
+Run: git clone https://github.com/onismyh/RedPen.git ~/redpen && pip install -e ~/redpen
 Then use `redpen --help` to verify.
 ```
 
 ### Option B: Install yourself
 
 ```bash
-git clone https://github.com/yourname/redpen.git
+git clone https://github.com/onismyh/RedPen.git
 cd redpen
 pip install -e .
 ```
