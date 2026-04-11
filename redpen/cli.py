@@ -11,16 +11,25 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+import logging
+
 app = typer.Typer(
     name="redpen",
     help="Word track changes toolkit for AI agents (Claude Code / Codex / OpenCode).",
     no_args_is_help=True,
 )
 console = Console()
+logger = logging.getLogger("redpen")
 
 
 def _resolve_output(input_path: str, output: str | None) -> str:
     """If -o is given use it, otherwise overwrite the input file (in-place)."""
+    if output:
+        from pathlib import Path
+        out = Path(output).resolve()
+        inp = Path(input_path).resolve()
+        if out == inp:
+            logger.warning("Output path is the same as input path. File will be overwritten.")
     return output if output else input_path
 
 
@@ -229,8 +238,9 @@ def show(
             else:
                 change_type = Text("OTHER", style="yellow")
 
-            text = change.text[:120] + ("..." if len(change.text) > 120 else "")
-            table.add_row(str(i), change_type, change.author or "-", text)
+            text = change.text if change.text else ""
+            display = text[:120] + ("..." if len(text) > 120 else "")
+            table.add_row(str(i), change_type, change.author or "-", display)
 
         console.print(table)
         console.print(f"\nTotal: {len(changes)} tracked changes")
