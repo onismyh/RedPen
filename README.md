@@ -1,64 +1,123 @@
 # RedPen
 
-**Make AI edit your Word documents like a human reviewer** — not rewriting entire paragraphs, but marking exactly what to delete, what to insert, and why, using native Word Track Changes.
+**Stop rewriting. Start redlining.**
+
+RedPen lets AI edit Word documents the way humans review them: with native Word Track Changes, comments, and line-by-line Accept / Reject control.
 
 > [**中文文档 (Chinese README)**](./README_CN.md)
 
-## What is this?
+## Why RedPen exists
 
-When you use ChatGPT / Claude to polish a document, the AI gives you a completely rewritten version. You have no idea what actually changed.
+Most AI writing tools give you a fully rewritten document.
 
-RedPen writes AI edits as native **Word Track Changes** — ~~old text~~ → **new text**, with comments explaining each change. You Accept / Reject individually in Word.
+That is bad for review workflows because:
+- you cannot see exactly what changed
+- you cannot accept only some edits
+- you lose the natural approval flow people already use in Word
 
-Works with **Claude Code, Codex, OpenCode**, or any AI agent that can run shell commands. No API key needed.
+RedPen fixes that.
 
----
+Instead of producing a second draft, it writes edits back as real Word revisions:
+- deletions
+- insertions
+- comments with reasons
+- native Accept / Reject in Microsoft Word
 
-## Installation
+## What you get
 
-### Option A: Tell your AI agent to install it
+RedPen is for people who want AI help without giving up editorial control.
 
-Paste this to Claude Code / Codex / any agent:
+Best for:
+- academic paper proofreading
+- contract and policy review
+- bilingual revision workflows
+- executive memo polishing
+- AI agent document review pipelines
 
+## 10-second mental model
+
+```text
+redpen read   -> agent decides edits -> redpen apply
+  JSON             your AI / reviewer      Track Changes + comments in Word
 ```
-Install RedPen — a Word track changes CLI tool.
-Run: git clone https://github.com/onismyh/RedPen.git ~/redpen && pip install -e ~/redpen
-Then use `redpen --help` to verify.
-```
 
-### Option B: Install yourself
+Open the output document in Word:
+Review -> All Markup -> Accept / Reject each change.
+
+## Why not just let AI rewrite the whole document?
+
+Because review is not generation.
+
+A rewritten document hides decisions.
+A redlined document exposes decisions.
+
+RedPen is built for the second case.
+
+## Quick start
+
+### Install
 
 ```bash
 git clone https://github.com/onismyh/RedPen.git
-cd redpen
+cd RedPen
 pip install -e .
 ```
 
 Requires Python 3.10+.
 
----
+### 3-minute workflow
 
-## How it works
+1. Read the document as structured text:
 
-```
-redpen read  →  Agent decides what to change  →  redpen apply
-  (JSON)         (agent's own intelligence)       (Word Track Changes)
-```
-
-Example in Claude Code:
-
-```
-User: Polish report.docx — fix grammar, improve tone
-
-Claude Code runs:
-  1. redpen read report.docx
-  2. (decides edits)
-  3. redpen apply report.docx @edits.json -o revised.docx
+```bash
+redpen read report.docx
 ```
 
-Open `revised.docx` in Word → Review → All Markup → Accept / Reject each change.
+2. Let your AI agent decide the edits, or start from a recipe scaffold:
 
----
+```bash
+redpen recipe proofread report.docx --json > proofread.json
+```
+
+3. Write revisions back into Word:
+
+```bash
+redpen apply report.docx @proofread.json -o revised.docx
+```
+
+4. Inspect the changes:
+
+```bash
+redpen show revised.docx
+```
+
+## Example workflows
+
+### 1. Proofread a report
+
+```bash
+redpen recipe proofread report.docx --json > edits.json
+redpen apply report.docx @edits.json -o report-reviewed.docx
+```
+
+Use when you want grammar and clarity fixes while preserving meaning.
+
+### 2. Tighten an executive memo
+
+```bash
+redpen recipe tighten memo.docx --json > edits.json
+redpen apply memo.docx @edits.json -o memo-tightened.docx
+```
+
+Use when you want less fluff and more concise writing.
+
+### 3. Reviewer mode for collaborative editing
+
+```bash
+redpen recipe reviewer draft.docx
+```
+
+Use when the author should review each suggestion with Track Changes and comments.
 
 ## Commands
 
@@ -67,32 +126,44 @@ Open `revised.docx` in Word → Review → All Markup → Accept / Reject each c
 | `read` | Extract paragraphs as JSON | `redpen read doc.docx` |
 | `apply` | Write tracked changes from JSON | `redpen apply doc.docx @edits.json -o out.docx` |
 | `replace` | Find & replace with tracking | `redpen replace doc.docx "old" "new"` |
-| `diff` | Compare two versions → revisions | `redpen diff v1.docx v2.docx -o diff.docx` |
+| `diff` | Compare two versions -> revisions | `redpen diff v1.docx v2.docx -o diff.docx` |
 | `show` | View tracked changes | `redpen show revised.docx` |
 | `accept` | Accept all changes | `redpen accept revised.docx -o clean.docx` |
 | `reject` | Reject all changes | `redpen reject revised.docx -o original.docx` |
+| `recipe` | Generate task-oriented editing scaffolds | `redpen recipe proofread doc.docx --json` |
 
-### `apply` JSON format
+## `apply` JSON format
 
 ```json
 [
   {
     "paragraph_index": 0,
     "changes": [
-      { "original": "text to find", "revised": "replacement", "reason": "written as Word comment" }
+      {
+        "original": "text to find",
+        "revised": "replacement",
+        "reason": "written as Word comment"
+      }
     ]
   }
 ]
 ```
 
-Accepts `@file.json`, stdin pipe, or inline JSON string.
-
----
+Accepts:
+- `@file.json`
+- stdin pipe
+- inline JSON string
 
 ## FAQ
 
-**Do I need an API key?** No. The AI agent decides what to change; RedPen just writes it as Word Track Changes.
+**Do I need an API key?**
+No. Your AI agent decides what to change. RedPen only writes the edits back as Word Track Changes.
 
-**Can't see tracked changes in Word?** Review tab → Display for Review → "All Markup".
+**Can I accept only some changes?**
+Yes. Right-click any change in Word -> Accept or Reject.
 
-**Can I accept only some changes?** Yes — right-click any change in Word → Accept or Reject.
+**Can't see tracked changes in Word?**
+Review tab -> Display for Review -> All Markup.
+
+**Is this only for AI agents?**
+No. Humans can use it too. But it is especially useful as a revision layer for Claude Code, Codex, OpenCode, and similar agents.

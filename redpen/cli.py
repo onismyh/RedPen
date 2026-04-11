@@ -21,6 +21,10 @@ app = typer.Typer(
 console = Console()
 logger = logging.getLogger("redpen")
 
+from .recipes import app as recipe_app
+
+app.add_typer(recipe_app, name="recipe", help="Generate task-oriented revision scaffolds.")
+
 
 def _resolve_output(input_path: str, output: str | None) -> str:
     """If -o is given use it, otherwise overwrite the input file (in-place)."""

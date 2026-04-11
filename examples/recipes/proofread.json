@@ -1,0 +1,12 @@
+[
+  {
+    "paragraph_index": 1,
+    "changes": [
+      {
+        "original": "在过去的一个季度里面",
+        "revised": "在过去一个季度里",
+        "reason": "精简表达并保持原意。"
+      }
+    ]
+  }
+]

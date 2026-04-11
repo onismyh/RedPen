@@ -19,5 +19,13 @@ dependencies = [
 [project.scripts]
 redpen = "redpen.cli:app"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<10.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools.packages.find]
 where = ["."]
