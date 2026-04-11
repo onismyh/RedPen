@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json as json_mod
+import logging
 import sys
 from pathlib import Path
 
@@ -10,8 +12,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
-
-import logging
 
 app = typer.Typer(
     name="redpen",
@@ -40,6 +40,7 @@ def _resolve_output(input_path: str, output: str | None) -> str:
 def read(
     input_file: str = typer.Argument(..., help=".docx file to read"),
     plain: bool = typer.Option(False, "--plain", help="Plain text instead of JSON"),
+    meta: bool = typer.Option(False, "--meta", help="Include paragraph style and run formatting metadata"),
 ) -> None:
     """Extract document paragraphs as JSON (default) or plain text.
 
@@ -47,15 +48,67 @@ def read(
     the text shown is the "accepted" version — i.e. what the document
     looks like after accepting all prior revisions.  This lets agents
     make further edits on the latest state.
+
+    With --meta, each paragraph includes:
+      - style: paragraph style name (e.g. "Heading 1", "Normal")
+      - is_heading: true if style contains "heading" or "title"
+      - is_list: true if style contains "list" or "bullet"
+      - runs: list of run objects with bold, italic, font_name
     """
+    from docx.oxml.ns import qn
     from docx_revisions import RevisionDocument
 
     rdoc = RevisionDocument(input_file)
     paragraphs = []
     for i, para in enumerate(rdoc.paragraphs):
         text = para.accepted_text
-        if text.strip():
-            paragraphs.append({"index": i, "text": text})
+        if not text.strip() and not meta:
+            continue
+
+        entry: dict = {"index": i, "text": text}
+
+        if meta:
+            # Paragraph style name
+            style_name = ""
+            try:
+                style_name = para.style.name if para.style else ""
+            except Exception:
+                pass
+            style_lower = style_name.lower()
+
+            entry["style"] = style_name
+            entry["is_heading"] = any(kw in style_lower for kw in ("heading", "title", "subtitle"))
+            entry["is_list"] = any(kw in style_lower for kw in ("list", "bullet", "number"))
+
+            # Run-level formatting
+            runs_info = []
+            for run in para.runs:
+                if not run.text:
+                    continue
+                rpr = run._r.find(qn("w:rPr"))
+                run_info: dict = {"text": run.text[:60]}  # truncate for readability
+
+                if rpr is not None:
+                    bold_el = rpr.find(qn("w:b"))
+                    run_info["bold"] = bold_el is not None and bold_el.get(qn("w:val")) != "0"
+                    italic_el = rpr.find(qn("w:i"))
+                    run_info["italic"] = italic_el is not None and italic_el.get(qn("w:val")) != "0"
+                    font_el = rpr.find(qn("w:rFonts"))
+                    if font_el is not None:
+                        run_info["font_name"] = font_el.get(qn("w:ascii")) or font_el.get(qn("w:hAnsi")) or ""
+                    color_el = rpr.find(qn("w:color"))
+                    if color_el is not None:
+                        run_info["color"] = color_el.get(qn("w:val")) or ""
+                else:
+                    run_info["bold"] = False
+                    run_info["italic"] = False
+                    run_info["font_name"] = ""
+                    run_info["color"] = ""
+
+                runs_info.append(run_info)
+            entry["runs"] = runs_info
+
+        paragraphs.append(entry)
 
     has_changes = len(rdoc.track_changes) > 0
 
@@ -106,7 +159,8 @@ def apply(
         if sys.stdin.isatty():
             console.print("[red]Error:[/red] No edits provided. Pass JSON, @file, or pipe via stdin.")
             raise typer.Exit(1)
-        raw = sys.stdin.read()
+        # Explicit UTF-8 to avoid locale-dependent encoding errors
+        raw = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8").read()
     elif edits_json.startswith("@"):
         with open(edits_json[1:], "r", encoding="utf-8") as f:
             raw = f.read()
@@ -159,12 +213,22 @@ def replace(
     replacement: str = typer.Argument(..., help="Replacement text"),
     output: str = typer.Option(None, "-o", "--output", help="Output file path"),
     author: str = typer.Option("Claude", "--author", help="Revision author name"),
+    cross_para: bool = typer.Option(False, "--cross-para", "-x", help="Allow matches spanning paragraph boundaries"),
 ) -> None:
-    """Find and replace with revision tracking."""
+    """Find and replace with revision tracking.
+
+    Without --cross-para, only matches within a single paragraph are found.
+    With --cross-para, matches that span across paragraphs are also replaced.
+    """
     from .revision_writer import find_and_replace_tracked
 
-    out_path = _resolve_output(input_file, output)
-    rdoc, count = find_and_replace_tracked(input_file, search, replacement, author=author)
+    if cross_para:
+        from .revision_writer import replace_cross_paragraph
+        out_path = _resolve_output(input_file, output)
+        rdoc, count = replace_cross_paragraph(input_file, search, replacement, author=author)
+    else:
+        out_path = _resolve_output(input_file, output)
+        rdoc, count = find_and_replace_tracked(input_file, search, replacement, author=author)
 
     if count == 0:
         console.print(f"[yellow]Text not found:[/yellow] \"{search}\"")
