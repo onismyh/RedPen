@@ -439,6 +439,15 @@ def review(
         clean_rdoc.save(str(clean_path))
 
         # --- Generate report JSON ---
+        from .academic import build_academic_structure as _bas
+        _structure = _bas(paragraphs)
+        _sections = sorted({ap.section.value for ap in _structure})
+        _protected_count = sum(1 for ap in _structure if ap.is_protected)
+        _span_kinds: dict[str, int] = {}
+        for _ap in _structure:
+            for _s in _ap.protected_spans:
+                _span_kinds[_s.kind] = _span_kinds.get(_s.kind, 0) + 1
+
         report = {
             "mode": mode,
             "lang": lang,
@@ -451,14 +460,46 @@ def review(
             "paragraphs_changed": len(parsed_edits),
             "model": model or "",
             "protection_warnings": protection_warnings,
+            "artifacts": {
+                "reviewed": str(out_p.resolve()),
+                "clean": str(clean_path.resolve()),
+                "report": str(report_path.resolve()),
+            },
+            "summary": {
+                "sections_found": _sections,
+                "paragraphs_reviewed": len(parsed_edits),
+                "paragraphs_skipped": len(paragraphs) - len(parsed_edits),
+                "edits_applied": total,
+                "edits_skipped": len(protection_warnings),
+            },
+            "safety": {
+                "protected_paragraphs": _protected_count,
+                "protected_span_counts": _span_kinds,
+                "skipped_sections": [s for s in _sections if s in ("references", "appendix")],
+                "protection_warnings": protection_warnings,
+            },
         }
         report_path.write_text(
             json_mod.dumps(report, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-        console.print(f"Applied {total} tracked changes across {len(parsed_edits)} paragraphs -> {out_path}")
-        console.print("Review complete.")
+        # --- Human-readable summary for --run (no --json) ---
+        skipped_count = len(protection_warnings)
+        console.print()
+        console.print("[bold green]Review complete.[/bold green]")
+        console.print()
+        console.print(f"  [bold]Mode:[/bold]      {mode}")
+        console.print(f"  [bold]Changes:[/bold]   {total} edits across {len(parsed_edits)} paragraphs")
+        if skipped_count:
+            console.print(f"  [bold]Skipped:[/bold]   {skipped_count} edit(s) filtered (protected content)")
+        console.print()
+        console.print("[bold]Artifacts:[/bold]")
+        console.print(f"  1. {out_p.name:<40} Track Changes + comments — open in Word")
+        console.print(f"  2. {clean_path.name:<40} All changes accepted — clean final version")
+        console.print(f"  3. {report_path.name:<40} Machine-readable report (JSON)")
+        console.print()
+        console.print("[dim]Next: open the .reviewed.docx in Word → Review → All Markup → Accept / Reject each change.[/dim]")
         return
 
     try:
@@ -470,10 +511,29 @@ def review(
     if json_output:
         print(plan.to_json())
     else:
-        console.print(f"[bold]Review plan[/bold] — mode={plan.mode}, lang={plan.lang}")
-        console.print(f"Paragraphs: {plan.total_paragraphs} total, {plan.reviewable_paragraphs} reviewable, {plan.skipped_paragraphs} skipped")
-        console.print(f"Sections: {', '.join(plan.sections_found)}")
-        console.print(f"Review items: {len(plan.items)}")
+        # --- Preflight summary (no --run) ---
+        from collections import Counter
+
+        console.print()
+        console.print(f"[bold]Preflight — review plan for[/bold] {Path(input_file).name}")
+        console.print()
+        console.print(f"  [bold]Mode:[/bold]       {plan.mode}")
+        console.print(f"  [bold]Language:[/bold]   {plan.lang}")
+        console.print(f"  [bold]Paragraphs:[/bold] {plan.total_paragraphs} total, {plan.reviewable_paragraphs} reviewable, {plan.skipped_paragraphs} skipped")
+        console.print(f"  [bold]Sections:[/bold]   {', '.join(plan.sections_found)}")
+
+        # Category breakdown
+        cat_counts = Counter(item.category for item in plan.items
+                           if item.severity not in ("信息", "Info"))
+        if cat_counts:
+            console.print()
+            console.print("[bold]Review focus:[/bold]")
+            for cat, cnt in cat_counts.most_common():
+                console.print(f"  {cat}: {cnt} items")
+
+        console.print()
+        console.print(f"Total review items: {len(plan.items)}")
+
         if plan.items:
             table = Table(show_lines=False)
             table.add_column("Para#", style="dim", width=6)
@@ -485,6 +545,9 @@ def review(
             console.print(table)
             if len(plan.items) > 30:
                 console.print(f"[dim]... and {len(plan.items) - 30} more items[/dim]")
+
+        console.print()
+        console.print("[dim]To run the full review: add --run to call Claude and generate artifacts.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +568,22 @@ def inspect(
     paragraphs = _read_paragraphs_with_meta(input_file)
     structure = build_academic_structure(paragraphs)
 
+    # --- Build protection summary ---
+    from collections import Counter
+
+    sections_found = sorted({ap.section.value for ap in structure})
+    sec_counts = Counter(ap.section.value for ap in structure if not ap.is_heading)
+    protected_paragraphs = [ap for ap in structure if ap.is_protected]
+    all_span_kinds = Counter(
+        s.kind for ap in structure for s in ap.protected_spans
+    )
+    heading_count = sum(1 for ap in structure if ap.is_heading)
+    protection_summary = {
+        "protected_paragraphs": len(protected_paragraphs),
+        "protected_span_counts": dict(all_span_kinds.most_common()),
+        "skipped_sections": [s for s in sections_found if s in ("references", "appendix")],
+    }
+
     if json_output:
         items = []
         for ap in structure:
@@ -520,7 +599,17 @@ def inspect(
                     {"kind": s.kind, "text": s.text} for s in ap.protected_spans
                 ]
             items.append(entry)
-        print(json_mod.dumps(items, ensure_ascii=False, indent=2))
+        payload = {
+            "paragraphs": items,
+            "summary": {
+                "total_paragraphs": len(structure),
+                "headings": heading_count,
+                "sections": sections_found,
+                "section_counts": dict(sec_counts.most_common()),
+                "protection": protection_summary,
+            },
+        }
+        print(json_mod.dumps(payload, ensure_ascii=False, indent=2))
     else:
         table = Table(title=f"Document Structure — {Path(input_file).name}", show_lines=False)
         table.add_column("#", style="dim", width=5)
@@ -540,14 +629,23 @@ def inspect(
             table.add_row(str(ap.index), ap.section.value, h_mark, p_mark, pspan_summary, preview)
 
         console.print(table)
-        console.print(f"\nTotal: {len(structure)} paragraphs")
 
-        # Section summary
-        from collections import Counter
-        sec_counts = Counter(ap.section.value for ap in structure if not ap.is_heading)
-        console.print("\n[bold]Sections:[/bold]")
+        # Protection summary
+        console.print()
+        console.print(f"[bold]Summary:[/bold] {len(structure)} paragraphs, {heading_count} headings")
+        console.print()
+        console.print("[bold]Sections:[/bold]")
         for sec, cnt in sec_counts.most_common():
             console.print(f"  {sec}: {cnt} paragraphs")
+
+        console.print()
+        console.print("[bold]Protection:[/bold]")
+        console.print(f"  {len(protected_paragraphs)} fully-protected paragraph(s)")
+        if all_span_kinds:
+            for kind, cnt in all_span_kinds.most_common():
+                console.print(f"  {kind}: {cnt} span(s)")
+        if protection_summary["skipped_sections"]:
+            console.print(f"  Skipped sections: {', '.join(protection_summary['skipped_sections'])}")
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +673,7 @@ def check(
     paragraphs = _read_paragraphs_for_check(input_file)
     paragraphs_meta = _read_paragraphs_with_meta(input_file)
     structure = build_academic_structure(paragraphs_meta)
-    results = quick_check(paragraphs, lang=lang)
+    findings_list = quick_check(paragraphs, lang=lang)
 
     rdoc = RevisionDocument(input_file)
     tracked_changes_count = len(rdoc.track_changes)
@@ -597,46 +695,85 @@ def check(
     if SectionKind.REFERENCES.value in sections_found:
         warnings.append("References section detected; academic review should skip bibliography edits.")
 
-    protected_modifications = [r for r in results if r.kind == "protected_region"]
+    protected_modifications = [r for r in findings_list if r.kind == "protected_region"]
     if protected_modifications:
         warnings.append(f"Detected {len(protected_modifications)} protected regions that should remain unchanged.")
 
+    # Build protection summary
+    from collections import Counter as _Counter
+    protected_paragraphs = [ap for ap in structure if ap.is_protected]
+    all_span_kinds = _Counter(s.kind for ap in structure for s in ap.protected_spans)
+    protection_summary = {
+        "protected_paragraphs": len(protected_paragraphs),
+        "protected_span_counts": dict(all_span_kinds.most_common()),
+        "skipped_sections": [s for s in sections_found if s in ("references", "appendix")],
+    }
+
+    # Overall status
+    if errors:
+        status = "error"
+    elif warnings:
+        status = "warning"
+    else:
+        status = "ok"
+
     health = {
+        "status": status,
         "tracked_changes_count": tracked_changes_count,
         "comments_count": comments_count,
+        "warning_count": len(warnings),
+        "finding_count": len(findings_list),
         "warnings": warnings,
         "errors": errors,
     }
-    findings = [{"paragraph_index": r.paragraph_index, "kind": r.kind, "message": r.message} for r in results]
+    findings = [{"paragraph_index": r.paragraph_index, "kind": r.kind, "message": r.message} for r in findings_list]
     payload = {
         "findings": findings,
         "health": health,
         "sections_found": sections_found,
+        "protection": protection_summary,
     }
 
     if json_output:
         print(json_mod.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        if not findings and not warnings and not errors:
-            console.print("[green]No issues found.[/green]")
-            return
-        table = Table(show_lines=False)
-        table.add_column("Para#", style="dim", width=6)
-        table.add_column("Kind", width=18)
-        table.add_column("Message", min_width=40)
-        for r in findings:
-            table.add_row(str(r["paragraph_index"]), r["kind"], r["message"][:100])
+        # Overall status line
+        if status == "ok":
+            console.print("[bold green]Status: OK[/bold green] — no issues found.")
+        elif status == "warning":
+            console.print(f"[bold yellow]Status: WARNING[/bold yellow] — {len(warnings)} warning(s), {len(findings)} finding(s)")
+        else:
+            console.print(f"[bold red]Status: ERROR[/bold red] — {len(errors)} error(s)")
+
         if findings:
+            console.print()
+            table = Table(show_lines=False)
+            table.add_column("Para#", style="dim", width=6)
+            table.add_column("Kind", width=18)
+            table.add_column("Message", min_width=40)
+            for r in findings:
+                table.add_row(str(r["paragraph_index"]), r["kind"], r["message"][:100])
             console.print(table)
-            console.print(f"\nTotal: {len(findings)} findings")
+            console.print(f"\nFindings: {len(findings)}")
+
+        # Protection summary
+        if all_span_kinds:
+            console.print()
+            console.print("[bold]Protected content:[/bold]")
+            console.print(f"  {len(protected_paragraphs)} fully-protected paragraph(s)")
+            for kind, cnt in all_span_kinds.most_common():
+                console.print(f"  {kind}: {cnt} span(s)")
+
         if warnings:
-            console.print("\n[bold yellow]Warnings[/bold yellow]")
+            console.print()
+            console.print("[bold yellow]Warnings:[/bold yellow]")
             for w in warnings:
-                console.print(f"- {w}")
+                console.print(f"  - {w}")
         if errors:
-            console.print("\n[bold red]Errors[/bold red]")
+            console.print()
+            console.print("[bold red]Errors:[/bold red]")
             for e in errors:
-                console.print(f"- {e}")
+                console.print(f"  - {e}")
 
 
 # ---------------------------------------------------------------------------
