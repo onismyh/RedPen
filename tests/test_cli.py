@@ -64,3 +64,26 @@ def test_recipe_reviewer_mentions_reviewer_mode(tmp_path: Path) -> None:
     assert "reviewer" in result.stdout.lower()
     assert "Track Changes" in result.stdout
     assert "Accept / Reject" in result.stdout
+
+
+def test_apply_rejects_invalid_edits_json_shape(tmp_path: Path) -> None:
+    doc = copy_example("sample.docx", tmp_path)
+    out = tmp_path / "invalid.docx"
+
+    result = runner.invoke(
+        app,
+        ["apply", str(doc), '[{"paragraph_index": "0", "changes": []}]', "-o", str(out)],
+    )
+
+    assert result.exit_code == 1
+    assert "Invalid edits JSON" in result.stdout
+    assert "paragraph_index" in result.stdout
+    assert not out.exists()
+
+
+def test_apply_rejects_invalid_json_text(tmp_path: Path) -> None:
+    doc = copy_example("sample.docx", tmp_path)
+    result = runner.invoke(app, ["apply", str(doc), '{not-json'])
+
+    assert result.exit_code == 1
+    assert "Invalid JSON" in result.stdout

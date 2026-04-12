@@ -54,6 +54,17 @@ class ParagraphEdit:
     changes: list[TextChange]
 
 
+@dataclass
+class ApplyStats:
+    """Execution stats for applying edits."""
+
+    proposed_changes: int = 0
+    applied_changes: int = 0
+    skipped_changes: int = 0
+    not_found_changes: int = 0
+    applied_paragraph_indexes: set[int] | None = None
+
+
 def _replace_tracked_with_format(para, search_text: str, replace_text: str, author: str) -> int:
     """Replace text with tracked changes, preserving the original run formatting.
 
@@ -141,23 +152,29 @@ def apply_tracked_changes_protected(
     doc_path: str,
     edits: list[ParagraphEdit],
     author: str = "AI Reviewer",
-) -> tuple[RevisionDocument, list[dict]]:
+) -> tuple[RevisionDocument, list[dict], ApplyStats, list[ParagraphEdit]]:
     """Apply tracked changes with protection-aware filtering.
 
     Before applying each change, checks whether the original or revised text
     would modify a protected span (citation, formula, figure ref, etc.).
     Changes that alter protected spans are skipped and logged.
 
-    Returns (document, list_of_skipped_warnings).
+    Returns (document, list_of_skipped_warnings, execution_stats, applied_edits).
     """
     from .academic import find_protected_spans
 
     rdoc = RevisionDocument(doc_path)
     warnings: list[dict] = []
+    applied_changes_by_paragraph: dict[int, list[TextChange]] = {}
+    stats = ApplyStats(
+        proposed_changes=sum(len(edit.changes) for edit in edits),
+        applied_paragraph_indexes=set(),
+    )
 
     for edit in edits:
         idx = edit.paragraph_index
         if idx < 0 or idx >= len(rdoc.paragraphs):
+            stats.not_found_changes += len(edit.changes)
             continue
 
         para = rdoc.paragraphs[idx]
@@ -191,15 +208,29 @@ def apply_tracked_changes_protected(
                                 break
 
             if not skip:
-                _replace_tracked_with_format(
+                applied = _replace_tracked_with_format(
                     para,
                     search_text=change.original,
                     replace_text=change.revised,
                     author=author,
                 )
+                if applied > 0:
+                    stats.applied_changes += applied
+                    assert stats.applied_paragraph_indexes is not None
+                    stats.applied_paragraph_indexes.add(idx)
+                    applied_changes_by_paragraph.setdefault(idx, []).append(change)
+                else:
+                    stats.not_found_changes += 1
+            else:
+                stats.skipped_changes += 1
 
     _enable_markup_view(rdoc)
-    return rdoc, warnings
+    applied_edits = [
+        ParagraphEdit(paragraph_index=idx, changes=changes)
+        for idx, changes in sorted(applied_changes_by_paragraph.items())
+        if changes
+    ]
+    return rdoc, warnings, stats, applied_edits
 
 
 def accept_all(doc_path: str) -> RevisionDocument:

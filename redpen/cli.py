@@ -155,8 +155,9 @@ def apply(
             {"original": "old", "revised": "new", "reason": "why"}
         ]}]
     """
-    from .revision_writer import apply_tracked_changes, ParagraphEdit, TextChange
+    from .revision_writer import apply_tracked_changes
     from .comment_writer import add_comments_to_edits
+    from .schema import EditValidationError, parse_edit_payload
 
     # Load JSON from argument, @file, or stdin
     if edits_json is None:
@@ -171,23 +172,17 @@ def apply(
     else:
         raw = edits_json
 
-    data = json_mod.loads(raw)
-    edits = []
-    for item in data:
-        changes = [
-            TextChange(
-                original=c["original"],
-                revised=c["revised"],
-                reason=c.get("reason", ""),
-            )
-            for c in item.get("changes", [])
-            if c.get("original") != c.get("revised")
-        ]
-        if changes:
-            edits.append(ParagraphEdit(
-                paragraph_index=item["paragraph_index"],
-                changes=changes,
-            ))
+    try:
+        data = json_mod.loads(raw)
+    except json_mod.JSONDecodeError as exc:
+        console.print(f"[red]Error:[/red] Invalid JSON: {exc.msg}")
+        raise typer.Exit(1)
+
+    try:
+        edits = parse_edit_payload(data)
+    except EditValidationError as exc:
+        console.print(f"[red]Error:[/red] Invalid edits JSON: {exc}")
+        raise typer.Exit(1)
 
     if not edits:
         console.print("[yellow]No effective changes in the provided JSON.[/yellow]")
@@ -369,6 +364,8 @@ def review(
     """
     from .config import load_config
     from .review import generate_review_plan
+    from .review_runner import run_review
+    from .schema import EditValidationError, paragraph_edits_to_payload, parse_edit_payload
 
     if lang is None:
         lang = load_config().comment_language
@@ -380,7 +377,7 @@ def review(
         from .review import generate_edits_with_claude
 
         try:
-            edits = generate_edits_with_claude(paragraphs, mode=mode, lang=lang, model=model)
+            raw_edits = generate_edits_with_claude(paragraphs, mode=mode, lang=lang, model=model)
         except _sp.TimeoutExpired:
             console.print("[red]Error:[/red] Claude timed out while generating edits.")
             raise typer.Exit(1)
@@ -389,115 +386,48 @@ def review(
             console.print(f"[red]Error:[/red] Claude process failed: {stderr}")
             raise typer.Exit(1)
 
+        try:
+            parsed_edits = parse_edit_payload(raw_edits)
+        except EditValidationError as exc:
+            console.print(f"[red]Error:[/red] Invalid Claude edits: {exc}")
+            raise typer.Exit(1)
+
         if json_output:
-            print(json_mod.dumps(edits, ensure_ascii=False, indent=2))
+            print(json_mod.dumps(paragraph_edits_to_payload(parsed_edits), ensure_ascii=False, indent=2))
             return
-
-        # Apply edits as tracked changes (protection-aware)
-        from .revision_writer import apply_tracked_changes_protected, ParagraphEdit, TextChange
-        from .comment_writer import add_comments_to_edits
-
-        parsed_edits = []
-        for item in edits:
-            changes = [
-                TextChange(
-                    original=c["original"],
-                    revised=c["revised"],
-                    reason=c.get("reason", ""),
-                )
-                for c in item.get("changes", [])
-                if c.get("original") != c.get("revised")
-            ]
-            if changes:
-                parsed_edits.append(ParagraphEdit(
-                    paragraph_index=item["paragraph_index"],
-                    changes=changes,
-                ))
 
         if not parsed_edits:
             console.print("[yellow]No effective changes generated.[/yellow]")
             raise typer.Exit(0)
 
-        out_path = output or str(Path(input_file).with_suffix("").with_name(
-            Path(input_file).stem + ".reviewed.docx"
-        ))
-        rdoc, protection_warnings = apply_tracked_changes_protected(input_file, parsed_edits, author="Claude")
-        doc = rdoc.document
-        add_comments_to_edits(doc, list(doc.paragraphs), parsed_edits, author="Claude")
-        rdoc.save(out_path)
-
-        total = sum(len(e.changes) for e in parsed_edits)
-
-        # --- Generate clean docx (accept all tracked changes) ---
-        out_p = Path(out_path)
-        base = out_p.with_suffix("")  # strip .docx
-        clean_path = base.parent / (base.name + ".clean.docx")
-        report_path = base.parent / (base.name + ".report.json")
-
-        from .revision_writer import accept_all
-        clean_rdoc = accept_all(str(out_p))
-        clean_rdoc.save(str(clean_path))
-
-        # --- Generate report JSON ---
-        from .academic import build_academic_structure as _bas
-        _structure = _bas(paragraphs)
-        _sections = sorted({ap.section.value for ap in _structure})
-        _protected_count = sum(1 for ap in _structure if ap.is_protected)
-        _span_kinds: dict[str, int] = {}
-        for _ap in _structure:
-            for _s in _ap.protected_spans:
-                _span_kinds[_s.kind] = _span_kinds.get(_s.kind, 0) + 1
-
-        report = {
-            "mode": mode,
-            "lang": lang,
-            "source_file": str(Path(input_file).resolve()),
-            "reviewed_file": str(out_p.resolve()),
-            "clean_file": str(clean_path.resolve()),
-            "report_file": str(report_path.resolve()),
-            "change_count": total,
-            "paragraph_count": len(paragraphs),
-            "paragraphs_changed": len(parsed_edits),
-            "model": model or "",
-            "protection_warnings": protection_warnings,
-            "artifacts": {
-                "reviewed": str(out_p.resolve()),
-                "clean": str(clean_path.resolve()),
-                "report": str(report_path.resolve()),
-            },
-            "summary": {
-                "sections_found": _sections,
-                "paragraphs_reviewed": len(parsed_edits),
-                "paragraphs_skipped": len(paragraphs) - len(parsed_edits),
-                "edits_applied": total,
-                "edits_skipped": len(protection_warnings),
-            },
-            "safety": {
-                "protected_paragraphs": _protected_count,
-                "protected_span_counts": _span_kinds,
-                "skipped_sections": [s for s in _sections if s in ("references", "appendix")],
-                "protection_warnings": protection_warnings,
-            },
-        }
-        report_path.write_text(
-            json_mod.dumps(report, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        result = run_review(
+            input_file=input_file,
+            paragraphs=paragraphs,
+            edits=parsed_edits,
+            mode=mode,
+            lang=lang,
+            output=output,
+            model=model,
+            author="Claude",
         )
 
         # --- Human-readable summary for --run (no --json) ---
-        skipped_count = len(protection_warnings)
+        skipped_count = len(result.protection_warnings)
+        not_found_count = result.apply_stats.not_found_changes
         console.print()
         console.print("[bold green]Review complete.[/bold green]")
         console.print()
         console.print(f"  [bold]Mode:[/bold]      {mode}")
-        console.print(f"  [bold]Changes:[/bold]   {total} edits across {len(parsed_edits)} paragraphs")
+        console.print(f"  [bold]Changes:[/bold]   {result.change_count} edits across {result.paragraphs_changed} paragraphs")
         if skipped_count:
             console.print(f"  [bold]Skipped:[/bold]   {skipped_count} edit(s) filtered (protected content)")
+        if not_found_count:
+            console.print(f"  [bold]Unmatched:[/bold] {not_found_count} edit(s) could not be applied because the original text was not found")
         console.print()
         console.print("[bold]Artifacts:[/bold]")
-        console.print(f"  1. {out_p.name:<40} Track Changes + comments — open in Word")
-        console.print(f"  2. {clean_path.name:<40} All changes accepted — clean final version")
-        console.print(f"  3. {report_path.name:<40} Machine-readable report (JSON)")
+        console.print(f"  1. {Path(result.reviewed_path).name:<40} Track Changes + comments — open in Word")
+        console.print(f"  2. {Path(result.clean_path).name:<40} All changes accepted — clean final version")
+        console.print(f"  3. {Path(result.report_path).name:<40} Machine-readable report (JSON)")
         console.print()
         console.print("[dim]Next: open the .reviewed.docx in Word → Review → All Markup → Accept / Reject each change.[/dim]")
         return
