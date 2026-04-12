@@ -119,6 +119,60 @@ redpen recipe reviewer draft.docx
 
 Use when the author should review each suggestion with Track Changes and comments.
 
+### 4. Academic paper review (English papers)
+
+RedPen has a dedicated workflow for reviewing English academic papers.
+It automatically detects sections (Abstract, Methods, Results, …),
+protects citations (`[1]`, `(Author, 2024)`), inline math (`$...$`),
+figure/table/equation references, URLs and DOIs from modification,
+and skips the References section entirely.
+
+**Three review modes:**
+
+| Mode | Focus |
+|---|---|
+| `proofread` | Grammar and clarity only |
+| `academic-polish` | Grammar + conciseness + terminology + academic tone |
+| `reviewer` | Full review: all of the above + logic flow |
+
+**Quickstart** (using the included example):
+
+```bash
+# 1. Inspect document structure and protected regions
+redpen inspect examples/academic_paper.docx
+
+# 2. Generate a review plan (no AI, deterministic scaffold)
+redpen review examples/academic_paper.docx --mode academic-polish --json
+
+# 3. Run the full review (calls Claude, produces 3 artifacts)
+redpen review examples/academic_paper.docx --mode academic-polish --run
+```
+
+With `--run`, three files are produced:
+
+| File | Contents |
+|---|---|
+| `<stem>.reviewed.docx` | Track Changes + comments — open in Word to Accept/Reject |
+| `<stem>.reviewed.clean.docx` | All changes accepted — the "final" version |
+| `<stem>.reviewed.report.json` | Machine-readable summary (counts, paths, mode) |
+
+**Comment language** defaults to Chinese (`zh`) from `~/.redpen.toml`.
+Override per-call with `--lang en` or `--lang zh`.
+
+```toml
+# ~/.redpen.toml
+[default]
+comment_language = "en"   # or "zh"
+```
+
+**Lightweight pre-check** (no AI needed):
+
+```bash
+redpen check examples/academic_paper.docx --json
+```
+
+Finds protected regions, overly long sentences, and other heuristics.
+
 ## Commands
 
 | Command | What it does | Example |
@@ -131,6 +185,9 @@ Use when the author should review each suggestion with Track Changes and comment
 | `accept` | Accept all changes | `redpen accept revised.docx -o clean.docx` |
 | `reject` | Reject all changes | `redpen reject revised.docx -o original.docx` |
 | `recipe` | Generate task-oriented editing scaffolds | `redpen recipe proofread doc.docx --json` |
+| `review` | Academic paper review (scaffold or full run) | `redpen review paper.docx --mode academic-polish --run` |
+| `inspect` | Show document structure and protected regions | `redpen inspect paper.docx` |
+| `check` | Lightweight rule-based scan (no AI) | `redpen check paper.docx --json` |
 
 ## `apply` JSON format
 

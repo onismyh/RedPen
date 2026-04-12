@@ -117,6 +117,31 @@ redpen recipe reviewer draft.docx
 
 适合协同编辑：作者后续在 Word 中逐条 Accept / Reject。
 
+### 4. 英文学术论文润色 / 审稿
+
+RedPen 现在内置一条面向**英文论文**的 academic 工作流：
+- 自动识别常见 section（Abstract / Introduction / Methods / Results / Discussion / References）
+- 自动保护高风险内容：引用、公式、Fig./Table/Eq. 引用、URL、DOI
+- 默认跳过 References 区域
+- 支持三种模式：`proofread` / `academic-polish` / `reviewer`
+- comments 语言支持 `zh` / `en`
+
+```bash
+# 查看结构与保护区域
+redpen inspect examples/academic_paper.docx
+
+# 只生成 review scaffold（不调模型）
+redpen review examples/academic_paper.docx --mode academic-polish --json
+
+# 真正调用 Claude，直接产出完整交付物
+redpen review examples/academic_paper.docx --mode academic-polish --lang zh --run
+```
+
+`--run` 会生成三份文件：
+- `<stem>.reviewed.docx`：带 Track Changes 和 comments 的审阅版
+- `<stem>.reviewed.clean.docx`：接受全部修改后的干净版
+- `<stem>.reviewed.report.json`：模式、语言、修改数、输出路径等摘要
+
 ## 命令
 
 | 命令 | 做什么 | 示例 |
@@ -129,6 +154,9 @@ redpen recipe reviewer draft.docx
 | `accept` | 接受全部修订 | `redpen accept revised.docx -o clean.docx` |
 | `reject` | 拒绝全部修订 | `redpen reject revised.docx -o original.docx` |
 | `recipe` | 生成任务型编辑脚手架 | `redpen recipe proofread doc.docx --json` |
+| `review` | 学术论文 review（scaffold 或真运行） | `redpen review paper.docx --mode academic-polish --run` |
+| `inspect` | 查看结构与受保护区域 | `redpen inspect paper.docx` |
+| `check` | 轻量规则检查（不调模型） | `redpen check paper.docx --json` |
 
 ## `apply` 的 JSON 格式
 

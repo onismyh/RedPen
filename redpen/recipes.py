@@ -54,6 +54,20 @@ RECIPES: dict[str, RecipeSpec] = {
         change_reason="Reviewer note explaining the suggested change.",
         description="Best for collaborative review where the author will Accept / Reject each edit.",
     ),
+    "academic": RecipeSpec(
+        name="academic",
+        intent="Polish an English academic paper: fix grammar, improve clarity, and tighten prose while preserving technical meaning, citations, formulas, and references.",
+        prompt=(
+            "Review this academic paper paragraph by paragraph. "
+            "Fix grammar errors, improve clarity and conciseness, and ensure consistent academic tone. "
+            "Do NOT modify: citations like [1] or (Author, 2024), inline math ($...$), "
+            "Figure/Table/Equation references (e.g. Fig. 1, Table 2, Eq. 3), URLs, or DOIs. "
+            "Skip paragraphs in the References/Bibliography section entirely. "
+            "Explain each change briefly in the reason field."
+        ),
+        change_reason="Academic polish: improve clarity or fix grammar while preserving technical meaning.",
+        description="Best for polishing English academic papers before submission. Protects citations, formulas, and references.",
+    ),
 }
 
 
@@ -142,6 +156,38 @@ def reviewer(
     console.print("[bold]RedPen recipe: reviewer[/bold]")
     console.print("Review with native Word Track Changes so the author can Accept / Reject each edit.")
     console.print("This mode is best for editorial or collaborative reviewer workflows.")
+    console.print(f"Input: {payload['input_file']}")
+    console.print(f"Prompt: {payload['prompt']}")
+    console.print(f"Next: {payload['suggested_command']}")
+
+
+@app.command()
+def academic(
+    input_file: str = typer.Argument(..., help="Input .docx file"),
+    comment_lang: str = typer.Option(None, "--comment-lang", help="Comment language: zh | en (default from config)"),
+    json_output: bool = typer.Option(False, "--json", help="Output recipe scaffold as JSON"),
+) -> None:
+    """Generate a starter scaffold for academic paper polishing."""
+    from .config import load_config
+
+    if comment_lang is None:
+        comment_lang = load_config().comment_language
+
+    payload = _build_payload(RECIPES["academic"], Path(input_file).resolve())
+    payload["comment_language"] = comment_lang
+    if comment_lang == "zh":
+        payload["prompt"] += " Write all change reasons and comments in Chinese (中文)."
+    else:
+        payload["prompt"] += " Write all change reasons and comments in English."
+
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print("[bold]RedPen recipe: academic[/bold]")
+    console.print("Polish an English academic paper using Track Changes.")
+    console.print("Citations, formulas, figure/table/equation references are protected.")
+    console.print(f"Comment language: {comment_lang}")
     console.print(f"Input: {payload['input_file']}")
     console.print(f"Prompt: {payload['prompt']}")
     console.print(f"Next: {payload['suggested_command']}")
