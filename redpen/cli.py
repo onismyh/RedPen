@@ -411,25 +411,7 @@ def review(
             author="Claude",
         )
 
-        # --- Human-readable summary for --run (no --json) ---
-        skipped_count = len(result.protection_warnings)
-        not_found_count = result.apply_stats.not_found_changes
-        console.print()
-        console.print("[bold green]Review complete.[/bold green]")
-        console.print()
-        console.print(f"  [bold]Mode:[/bold]      {mode}")
-        console.print(f"  [bold]Changes:[/bold]   {result.change_count} edits across {result.paragraphs_changed} paragraphs")
-        if skipped_count:
-            console.print(f"  [bold]Skipped:[/bold]   {skipped_count} edit(s) filtered (protected content)")
-        if not_found_count:
-            console.print(f"  [bold]Unmatched:[/bold] {not_found_count} edit(s) could not be applied because the original text was not found")
-        console.print()
-        console.print("[bold]Artifacts:[/bold]")
-        console.print(f"  1. {Path(result.reviewed_path).name:<40} Track Changes + comments — open in Word")
-        console.print(f"  2. {Path(result.clean_path).name:<40} All changes accepted — clean final version")
-        console.print(f"  3. {Path(result.report_path).name:<40} Machine-readable report (JSON)")
-        console.print()
-        console.print("[dim]Next: open the .reviewed.docx in Word → Review → All Markup → Accept / Reject each change.[/dim]")
+        _print_review_run_summary(result, mode)
         return
 
     try:
@@ -441,43 +423,7 @@ def review(
     if json_output:
         print(plan.to_json())
     else:
-        # --- Preflight summary (no --run) ---
-        from collections import Counter
-
-        console.print()
-        console.print(f"[bold]Preflight — review plan for[/bold] {Path(input_file).name}")
-        console.print()
-        console.print(f"  [bold]Mode:[/bold]       {plan.mode}")
-        console.print(f"  [bold]Language:[/bold]   {plan.lang}")
-        console.print(f"  [bold]Paragraphs:[/bold] {plan.total_paragraphs} total, {plan.reviewable_paragraphs} reviewable, {plan.skipped_paragraphs} skipped")
-        console.print(f"  [bold]Sections:[/bold]   {', '.join(plan.sections_found)}")
-
-        # Category breakdown
-        cat_counts = Counter(item.category for item in plan.items
-                           if item.severity not in ("信息", "Info"))
-        if cat_counts:
-            console.print()
-            console.print("[bold]Review focus:[/bold]")
-            for cat, cnt in cat_counts.most_common():
-                console.print(f"  {cat}: {cnt} items")
-
-        console.print()
-        console.print(f"Total review items: {len(plan.items)}")
-
-        if plan.items:
-            table = Table(show_lines=False)
-            table.add_column("Para#", style="dim", width=6)
-            table.add_column("Section", width=16)
-            table.add_column("Category", width=20)
-            table.add_column("Severity", width=8)
-            for item in plan.items[:30]:  # cap display
-                table.add_row(str(item.paragraph_index), item.section, item.category, item.severity)
-            console.print(table)
-            if len(plan.items) > 30:
-                console.print(f"[dim]... and {len(plan.items) - 30} more items[/dim]")
-
-        console.print()
-        console.print("[dim]To run the full review: add --run to call Claude and generate artifacts.[/dim]")
+        _print_review_preflight(plan, input_file)
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +650,71 @@ def check(
             console.print("[bold red]Errors:[/bold red]")
             for e in errors:
                 console.print(f"  - {e}")
+
+
+# ---------------------------------------------------------------------------
+# Review display helpers
+# ---------------------------------------------------------------------------
+
+def _print_review_run_summary(result, mode: str) -> None:
+    """Print human-readable summary after review --run completes."""
+    skipped_count = len(result.protection_warnings)
+    not_found_count = result.apply_stats.not_found_changes
+    console.print()
+    console.print("[bold green]Review complete.[/bold green]")
+    console.print()
+    console.print(f"  [bold]Mode:[/bold]      {mode}")
+    console.print(f"  [bold]Changes:[/bold]   {result.change_count} edits across {result.paragraphs_changed} paragraphs")
+    if skipped_count:
+        console.print(f"  [bold]Skipped:[/bold]   {skipped_count} edit(s) filtered (protected content)")
+    if not_found_count:
+        console.print(f"  [bold]Unmatched:[/bold] {not_found_count} edit(s) could not be applied because the original text was not found")
+    console.print()
+    console.print("[bold]Artifacts:[/bold]")
+    console.print(f"  1. {Path(result.reviewed_path).name:<40} Track Changes + comments — open in Word")
+    console.print(f"  2. {Path(result.clean_path).name:<40} All changes accepted — clean final version")
+    console.print(f"  3. {Path(result.report_path).name:<40} Machine-readable report (JSON)")
+    console.print()
+    console.print("[dim]Next: open the .reviewed.docx in Word → Review → All Markup → Accept / Reject each change.[/dim]")
+
+
+def _print_review_preflight(plan, input_file: str) -> None:
+    """Print human-readable preflight summary for review (no --run)."""
+    from collections import Counter
+
+    console.print()
+    console.print(f"[bold]Preflight — review plan for[/bold] {Path(input_file).name}")
+    console.print()
+    console.print(f"  [bold]Mode:[/bold]       {plan.mode}")
+    console.print(f"  [bold]Language:[/bold]   {plan.lang}")
+    console.print(f"  [bold]Paragraphs:[/bold] {plan.total_paragraphs} total, {plan.reviewable_paragraphs} reviewable, {plan.skipped_paragraphs} skipped")
+    console.print(f"  [bold]Sections:[/bold]   {', '.join(plan.sections_found)}")
+
+    cat_counts = Counter(item.category for item in plan.items
+                       if item.severity not in ("信息", "Info"))
+    if cat_counts:
+        console.print()
+        console.print("[bold]Review focus:[/bold]")
+        for cat, cnt in cat_counts.most_common():
+            console.print(f"  {cat}: {cnt} items")
+
+    console.print()
+    console.print(f"Total review items: {len(plan.items)}")
+
+    if plan.items:
+        table = Table(show_lines=False)
+        table.add_column("Para#", style="dim", width=6)
+        table.add_column("Section", width=16)
+        table.add_column("Category", width=20)
+        table.add_column("Severity", width=8)
+        for item in plan.items[:30]:
+            table.add_row(str(item.paragraph_index), item.section, item.category, item.severity)
+        console.print(table)
+        if len(plan.items) > 30:
+            console.print(f"[dim]... and {len(plan.items) - 30} more items[/dim]")
+
+    console.print()
+    console.print("[dim]To run the full review: add --run to call Claude and generate artifacts.[/dim]")
 
 
 # ---------------------------------------------------------------------------

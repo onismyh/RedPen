@@ -8,6 +8,7 @@ from pathlib import Path
 from tests.conftest import copy_example, fake_generate_basic, runner
 
 from redpen.cli import app
+from redpen.review_runner import REPORT_SCHEMA_VERSION
 
 
 def test_review_academic_polish_json(tmp_path: Path) -> None:
@@ -80,6 +81,7 @@ def test_review_run_writes_clean_and_report_artifacts(tmp_path: Path, monkeypatc
     assert report.exists()
 
     payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1.0.0"
     assert payload["mode"] == "academic-polish"
     assert payload["lang"] == "zh"
     assert payload["reviewed_file"].endswith("academic-reviewed.docx")
@@ -242,6 +244,7 @@ def test_review_run_reports_unmatched_edits(tmp_path: Path, monkeypatch) -> None
     assert "Unmatched:" in result.output
     reviewed_report = tmp_path / "academic_paper.reviewed.report.json"
     payload = json.loads(reviewed_report.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == REPORT_SCHEMA_VERSION
     assert payload["summary"]["edits_proposed"] == 1
     assert payload["summary"]["edits_applied"] == 0
     assert payload["summary"]["edits_not_found"] == 1
@@ -277,6 +280,7 @@ def test_review_run_uses_protection_aware_apply(tmp_path: Path, monkeypatch) -> 
     assert result.exit_code == 0, result.output
     assert out.exists()
     payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == REPORT_SCHEMA_VERSION
     assert payload["change_count"] == 0
     assert payload["paragraphs_changed"] == 0
     assert payload["summary"]["edits_proposed"] == 1
@@ -290,3 +294,29 @@ def test_review_run_uses_protection_aware_apply(tmp_path: Path, monkeypatch) -> 
     assert show_result.exit_code == 0
     changes = json.loads(show_result.stdout)
     assert changes == []
+
+
+def test_report_schema_version_is_semver() -> None:
+    """REPORT_SCHEMA_VERSION must be a valid semver string."""
+    parts = REPORT_SCHEMA_VERSION.split(".")
+    assert len(parts) == 3
+    assert all(p.isdigit() for p in parts)
+
+
+def test_report_schema_version_is_first_key(tmp_path: Path, monkeypatch) -> None:
+    """schema_version should appear as the first key in the report JSON for discoverability."""
+    doc = copy_example("academic_paper.docx", tmp_path)
+    out = tmp_path / "sv-test.docx"
+    report = tmp_path / "sv-test.report.json"
+    monkeypatch.setattr("redpen.review.generate_edits_with_claude", fake_generate_basic)
+
+    result = runner.invoke(
+        app,
+        ["review", str(doc), "--mode", "academic-polish", "--lang", "zh", "--run", "-o", str(out)],
+    )
+
+    assert result.exit_code == 0, result.output
+    raw = report.read_text(encoding="utf-8")
+    payload = json.loads(raw)
+    assert list(payload.keys())[0] == "schema_version"
+    assert payload["schema_version"] == REPORT_SCHEMA_VERSION

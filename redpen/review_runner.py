@@ -10,6 +10,8 @@ from .academic import build_academic_structure
 from .comment_writer import add_comments_to_edits
 from .revision_writer import ApplyStats, ParagraphEdit, accept_all, apply_tracked_changes_protected
 
+REPORT_SCHEMA_VERSION = "1.0.0"
+
 
 @dataclass
 class ReviewRunResult:
@@ -67,6 +69,7 @@ def run_review(
     change_count = apply_stats.applied_changes
     paragraphs_changed = len(apply_stats.applied_paragraph_indexes or set())
     report = {
+        "schema_version": REPORT_SCHEMA_VERSION,
         "mode": mode,
         "lang": lang,
         "source_file": str(Path(input_file).resolve()),
