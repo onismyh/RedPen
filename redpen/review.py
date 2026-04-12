@@ -1,13 +1,13 @@
 """Review scaffold/plan generator for academic papers.
 
 Generates a structured review plan with per-section review items.
-Also provides generate_edits_with_claude() for real Claude-powered editing.
+Also provides generate_edits_with_claude() which delegates to the
+pluggable LLM backend defined in :mod:`redpen.llm`.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Sequence
@@ -300,29 +300,8 @@ def quick_check(paragraphs: Sequence[dict], lang: str = "zh") -> list[CheckResul
 
 
 # ---------------------------------------------------------------------------
-# Claude-powered edit generation
+# Claude-powered edit generation (delegates to LLM backend)
 # ---------------------------------------------------------------------------
-
-_SYSTEM_PROMPT_TEMPLATE = """\
-You are an expert academic paper editor. Review the provided paragraphs and \
-generate precise text edits in JSON format.
-
-Mode: {mode}
-Rules:
-- Do NOT modify citations like [1], (Author, 2024), inline math ($...$), \
-Figure/Table/Equation references (Fig. 1, Table 2, Eq. 3), URLs, or DOIs.
-- Skip paragraphs in the References/Bibliography section entirely.
-- Each edit must specify the exact original text and the revised text.
-- Keep edits minimal and preserve the author's meaning.
-{lang_instruction}
-
-Output a JSON array of objects, each with:
-  {{"paragraph_index": <int>, "changes": [{{"original": "...", "revised": "...", "reason": "..."}}]}}
-Only include paragraphs that need changes. Output ONLY valid JSON, no markdown fences."""
-
-_LANG_ZH = "Write all change reasons and comments in Chinese (中文)."
-_LANG_EN = "Write all change reasons and comments in English."
-
 
 def generate_edits_with_claude(
     paragraphs: Sequence[dict],
@@ -330,38 +309,11 @@ def generate_edits_with_claude(
     lang: str,
     model: str | None = None,
 ) -> list[dict]:
-    """Call Claude via the Claude Code CLI to generate edits.
+    """Call the active LLM backend to generate edits.
 
     Returns a list of edit dicts in the standard redpen apply format.
     This function is designed to be easily monkeypatched in tests.
     """
-    lang_instruction = _LANG_ZH if lang == "zh" else _LANG_EN
-    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        mode=mode, lang_instruction=lang_instruction,
-    )
+    from .llm import get_backend
 
-    # Build user message from paragraphs
-    lines = []
-    for p in paragraphs:
-        lines.append(f"[Paragraph {p['index']}] {p['text']}")
-    user_message = "\n\n".join(lines)
-
-    cmd = [
-        "claude", "-p", user_message,
-        "--output-format", "json",
-        "--allowedTools", "",
-        "--append-system-prompt", system_prompt,
-    ]
-    if model:
-        cmd.extend(["--model", model])
-
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180)
-
-    # Claude Code JSON output wraps the response in a JSON object with a "result" key
-    outer = json.loads(result.stdout)
-    content = outer.get("result", result.stdout) if isinstance(outer, dict) else result.stdout
-    if isinstance(content, str):
-        edits = json.loads(content)
-    else:
-        edits = content
-    return edits
+    return get_backend().generate_edits(paragraphs, mode=mode, lang=lang, model=model)
