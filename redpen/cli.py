@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json as json_mod
+import logging
 import sys
 from pathlib import Path
 
@@ -11,8 +13,6 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-import logging
-
 app = typer.Typer(
     name="redpen",
     help="Word track changes toolkit for AI agents (Claude Code / Codex / OpenCode).",
@@ -20,6 +20,10 @@ app = typer.Typer(
 )
 console = Console()
 logger = logging.getLogger("redpen")
+
+from .recipes import app as recipe_app
+
+app.add_typer(recipe_app, name="recipe", help="Generate task-oriented revision scaffolds.")
 
 
 def _resolve_output(input_path: str, output: str | None) -> str:
@@ -40,6 +44,7 @@ def _resolve_output(input_path: str, output: str | None) -> str:
 def read(
     input_file: str = typer.Argument(..., help=".docx file to read"),
     plain: bool = typer.Option(False, "--plain", help="Plain text instead of JSON"),
+    meta: bool = typer.Option(False, "--meta", help="Include paragraph style and run formatting metadata"),
 ) -> None:
     """Extract document paragraphs as JSON (default) or plain text.
 
@@ -47,15 +52,67 @@ def read(
     the text shown is the "accepted" version — i.e. what the document
     looks like after accepting all prior revisions.  This lets agents
     make further edits on the latest state.
+
+    With --meta, each paragraph includes:
+      - style: paragraph style name (e.g. "Heading 1", "Normal")
+      - is_heading: true if style contains "heading" or "title"
+      - is_list: true if style contains "list" or "bullet"
+      - runs: list of run objects with bold, italic, font_name
     """
+    from docx.oxml.ns import qn
     from docx_revisions import RevisionDocument
 
     rdoc = RevisionDocument(input_file)
     paragraphs = []
     for i, para in enumerate(rdoc.paragraphs):
         text = para.accepted_text
-        if text.strip():
-            paragraphs.append({"index": i, "text": text})
+        if not text.strip() and not meta:
+            continue
+
+        entry: dict = {"index": i, "text": text}
+
+        if meta:
+            # Paragraph style name
+            style_name = ""
+            try:
+                style_name = para.style.name if para.style else ""
+            except Exception:
+                pass
+            style_lower = style_name.lower()
+
+            entry["style"] = style_name
+            entry["is_heading"] = any(kw in style_lower for kw in ("heading", "title", "subtitle"))
+            entry["is_list"] = any(kw in style_lower for kw in ("list", "bullet", "number"))
+
+            # Run-level formatting
+            runs_info = []
+            for run in para.runs:
+                if not run.text:
+                    continue
+                rpr = run._r.find(qn("w:rPr"))
+                run_info: dict = {"text": run.text[:60]}  # truncate for readability
+
+                if rpr is not None:
+                    bold_el = rpr.find(qn("w:b"))
+                    run_info["bold"] = bold_el is not None and bold_el.get(qn("w:val")) != "0"
+                    italic_el = rpr.find(qn("w:i"))
+                    run_info["italic"] = italic_el is not None and italic_el.get(qn("w:val")) != "0"
+                    font_el = rpr.find(qn("w:rFonts"))
+                    if font_el is not None:
+                        run_info["font_name"] = font_el.get(qn("w:ascii")) or font_el.get(qn("w:hAnsi")) or ""
+                    color_el = rpr.find(qn("w:color"))
+                    if color_el is not None:
+                        run_info["color"] = color_el.get(qn("w:val")) or ""
+                else:
+                    run_info["bold"] = False
+                    run_info["italic"] = False
+                    run_info["font_name"] = ""
+                    run_info["color"] = ""
+
+                runs_info.append(run_info)
+            entry["runs"] = runs_info
+
+        paragraphs.append(entry)
 
     has_changes = len(rdoc.track_changes) > 0
 
@@ -98,55 +155,55 @@ def apply(
             {"original": "old", "revised": "new", "reason": "why"}
         ]}]
     """
-    from .revision_writer import apply_tracked_changes, ParagraphEdit, TextChange
+    from .revision_writer import apply_tracked_changes_checked
     from .comment_writer import add_comments_to_edits
+    from .schema import EditValidationError, parse_edit_payload
 
     # Load JSON from argument, @file, or stdin
     if edits_json is None:
         if sys.stdin.isatty():
             console.print("[red]Error:[/red] No edits provided. Pass JSON, @file, or pipe via stdin.")
             raise typer.Exit(1)
-        raw = sys.stdin.read()
+        # Explicit UTF-8 to avoid locale-dependent encoding errors
+        raw = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8").read()
     elif edits_json.startswith("@"):
         with open(edits_json[1:], "r", encoding="utf-8") as f:
             raw = f.read()
     else:
         raw = edits_json
 
-    data = json_mod.loads(raw)
-    edits = []
-    for item in data:
-        changes = [
-            TextChange(
-                original=c["original"],
-                revised=c["revised"],
-                reason=c.get("reason", ""),
-            )
-            for c in item.get("changes", [])
-            if c.get("original") != c.get("revised")
-        ]
-        if changes:
-            edits.append(ParagraphEdit(
-                paragraph_index=item["paragraph_index"],
-                changes=changes,
-            ))
+    try:
+        data = json_mod.loads(raw)
+    except json_mod.JSONDecodeError as exc:
+        console.print(f"[red]Error:[/red] Invalid JSON: {exc.msg}")
+        raise typer.Exit(1)
+
+    try:
+        edits = parse_edit_payload(data)
+    except EditValidationError as exc:
+        console.print(f"[red]Error:[/red] Invalid edits JSON: {exc}")
+        raise typer.Exit(1)
 
     if not edits:
         console.print("[yellow]No effective changes in the provided JSON.[/yellow]")
         raise typer.Exit(0)
 
     out_path = _resolve_output(input_file, output)
-    rdoc = apply_tracked_changes(input_file, edits, author=author)
+    rdoc, apply_warnings, apply_stats, applied_edits = apply_tracked_changes_checked(input_file, edits, author=author)
 
     if comment:
         doc = rdoc.document
         paragraphs = list(doc.paragraphs)
-        add_comments_to_edits(doc, paragraphs, edits, author=author)
+        add_comments_to_edits(doc, paragraphs, applied_edits, author=author)
 
     rdoc.save(out_path)
 
-    total = sum(len(e.changes) for e in edits)
-    console.print(f"Applied {total} tracked changes across {len(edits)} paragraphs -> {out_path}")
+    total = apply_stats.applied_changes
+    console.print(f"Applied {total} tracked changes across {len(apply_stats.applied_paragraph_indexes or set())} paragraphs -> {out_path}")
+    if apply_stats.drifted_changes:
+        console.print(f"[yellow]Skipped {apply_stats.drifted_changes} change(s) due to paragraph drift (anchor/hash mismatch).[/yellow]")
+    if apply_stats.not_found_changes:
+        console.print(f"[yellow]Could not apply {apply_stats.not_found_changes} change(s) because the original text was not found.[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -159,12 +216,22 @@ def replace(
     replacement: str = typer.Argument(..., help="Replacement text"),
     output: str = typer.Option(None, "-o", "--output", help="Output file path"),
     author: str = typer.Option("Claude", "--author", help="Revision author name"),
+    cross_para: bool = typer.Option(False, "--cross-para", "-x", help="Allow matches spanning paragraph boundaries"),
 ) -> None:
-    """Find and replace with revision tracking."""
+    """Find and replace with revision tracking.
+
+    Without --cross-para, only matches within a single paragraph are found.
+    With --cross-para, matches that span across paragraphs are also replaced.
+    """
     from .revision_writer import find_and_replace_tracked
 
-    out_path = _resolve_output(input_file, output)
-    rdoc, count = find_and_replace_tracked(input_file, search, replacement, author=author)
+    if cross_para:
+        from .revision_writer import replace_cross_paragraph
+        out_path = _resolve_output(input_file, output)
+        rdoc, count = replace_cross_paragraph(input_file, search, replacement, author=author)
+    else:
+        out_path = _resolve_output(input_file, output)
+        rdoc, count = find_and_replace_tracked(input_file, search, replacement, author=author)
 
     if count == 0:
         console.print(f"[yellow]Text not found:[/yellow] \"{search}\"")
@@ -278,6 +345,419 @@ def reject(
     rdoc = reject_all(input_file)
     rdoc.save(out_path)
     console.print(f"All changes rejected -> {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# redpen review  (academic review scaffold)
+# ---------------------------------------------------------------------------
+@app.command()
+def review(
+    input_file: str = typer.Argument(..., help=".docx file to review"),
+    mode: str = typer.Option("proofread", "--mode", "-m", help="Review mode: proofread | academic-polish | reviewer"),
+    lang: str = typer.Option(None, "--lang", "-l", help="Comment language: zh | en (default from config)"),
+    run: bool = typer.Option(False, "--run", help="Actually call Claude to generate edits"),
+    output: str = typer.Option(None, "-o", "--output", help="Output file path (used with --run, no --json)"),
+    model: str = typer.Option(None, "--model", help="Claude model override"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output review plan as JSON"),
+) -> None:
+    """Generate a structured review plan for an academic paper.
+
+    Without --run: produces a deterministic scaffold (no AI calls).
+    With --run --json: calls Claude and prints generated edits as JSON.
+    With --run: calls Claude, applies edits as tracked changes, saves to -o or <stem>.reviewed.docx.
+    """
+    from .config import load_config
+    from .review import generate_review_plan
+    from .review_runner import run_review
+    from .schema import EditValidationError, paragraph_edits_to_payload, parse_edit_payload
+
+    if lang is None:
+        lang = load_config().comment_language
+
+    paragraphs = _read_paragraphs_with_meta(input_file)
+
+    if run:
+        import subprocess as _sp
+        from .review import generate_edits_with_claude
+
+        try:
+            raw_edits = generate_edits_with_claude(paragraphs, mode=mode, lang=lang, model=model)
+        except _sp.TimeoutExpired:
+            console.print("[red]Error:[/red] Claude timed out while generating edits.")
+            raise typer.Exit(1)
+        except _sp.CalledProcessError as exc:
+            stderr = exc.stderr or ""
+            console.print(f"[red]Error:[/red] Claude process failed: {stderr}")
+            raise typer.Exit(1)
+
+        try:
+            parsed_edits = parse_edit_payload(raw_edits)
+        except EditValidationError as exc:
+            console.print(f"[red]Error:[/red] Invalid Claude edits: {exc}")
+            raise typer.Exit(1)
+
+        if json_output:
+            print(json_mod.dumps(paragraph_edits_to_payload(parsed_edits), ensure_ascii=False, indent=2))
+            return
+
+        if not parsed_edits:
+            console.print("[yellow]No effective changes generated.[/yellow]")
+            raise typer.Exit(0)
+
+        result = run_review(
+            input_file=input_file,
+            paragraphs=paragraphs,
+            edits=parsed_edits,
+            mode=mode,
+            lang=lang,
+            output=output,
+            model=model,
+            author="Claude",
+        )
+
+        _print_review_run_summary(result, mode)
+        return
+
+    try:
+        plan = generate_review_plan(paragraphs, mode=mode, lang=lang)
+    except ValueError:
+        console.print(f"[red]Error:[/red] Unknown review mode '{mode}'. Use: proofread, academic-polish, reviewer")
+        raise typer.Exit(1)
+
+    if json_output:
+        print(plan.to_json())
+    else:
+        _print_review_preflight(plan, input_file)
+
+
+# ---------------------------------------------------------------------------
+# redpen inspect  (academic structure inspection)
+# ---------------------------------------------------------------------------
+@app.command()
+def inspect(
+    input_file: str = typer.Argument(..., help=".docx file to inspect"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+) -> None:
+    """Inspect academic document structure: sections, headings, protected regions.
+
+    Shows which sections were detected, which paragraphs are protected
+    (citations, formulas, references), and a summary of the document layout.
+    """
+    from .academic import build_academic_structure
+
+    paragraphs = _read_paragraphs_with_meta(input_file)
+    structure = build_academic_structure(paragraphs)
+
+    # --- Build protection summary ---
+    from collections import Counter
+
+    sections_found = sorted({ap.section.value for ap in structure})
+    sec_counts = Counter(ap.section.value for ap in structure if not ap.is_heading)
+    protected_paragraphs = [ap for ap in structure if ap.is_protected]
+    all_span_kinds = Counter(
+        s.kind for ap in structure for s in ap.protected_spans
+    )
+    heading_count = sum(1 for ap in structure if ap.is_heading)
+    protection_summary = {
+        "protected_paragraphs": len(protected_paragraphs),
+        "protected_span_counts": dict(all_span_kinds.most_common()),
+        "skipped_sections": [s for s in sections_found if s in ("references", "appendix")],
+    }
+
+    if json_output:
+        items = []
+        for ap in structure:
+            entry: dict = {
+                "index": ap.index,
+                "section": ap.section.value,
+                "is_heading": ap.is_heading,
+                "is_protected": ap.is_protected,
+                "text_preview": ap.text[:80] + ("..." if len(ap.text) > 80 else ""),
+            }
+            if ap.protected_spans:
+                entry["protected_spans"] = [
+                    {"kind": s.kind, "text": s.text} for s in ap.protected_spans
+                ]
+            items.append(entry)
+        payload = {
+            "paragraphs": items,
+            "summary": {
+                "total_paragraphs": len(structure),
+                "headings": heading_count,
+                "sections": sections_found,
+                "section_counts": dict(sec_counts.most_common()),
+                "protection": protection_summary,
+            },
+        }
+        print(json_mod.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        table = Table(title=f"Document Structure — {Path(input_file).name}", show_lines=False)
+        table.add_column("#", style="dim", width=5)
+        table.add_column("Section", width=16)
+        table.add_column("H?", width=3)
+        table.add_column("P?", width=3)
+        table.add_column("Protected", width=12)
+        table.add_column("Text", min_width=40)
+
+        for ap in structure:
+            if not ap.text.strip():
+                continue
+            h_mark = "H" if ap.is_heading else ""
+            p_mark = "P" if ap.is_protected else ""
+            pspan_summary = ", ".join(sorted({s.kind for s in ap.protected_spans})) if ap.protected_spans else ""
+            preview = ap.text[:60] + ("..." if len(ap.text) > 60 else "")
+            table.add_row(str(ap.index), ap.section.value, h_mark, p_mark, pspan_summary, preview)
+
+        console.print(table)
+
+        # Protection summary
+        console.print()
+        console.print(f"[bold]Summary:[/bold] {len(structure)} paragraphs, {heading_count} headings")
+        console.print()
+        console.print("[bold]Sections:[/bold]")
+        for sec, cnt in sec_counts.most_common():
+            console.print(f"  {sec}: {cnt} paragraphs")
+
+        console.print()
+        console.print("[bold]Protection:[/bold]")
+        console.print(f"  {len(protected_paragraphs)} fully-protected paragraph(s)")
+        if all_span_kinds:
+            for kind, cnt in all_span_kinds.most_common():
+                console.print(f"  {kind}: {cnt} span(s)")
+        if protection_summary["skipped_sections"]:
+            console.print(f"  Skipped sections: {', '.join(protection_summary['skipped_sections'])}")
+
+
+# ---------------------------------------------------------------------------
+# redpen check  (lightweight rule-based scan)
+# ---------------------------------------------------------------------------
+@app.command()
+def check(
+    input_file: str = typer.Argument(..., help=".docx file to check"),
+    lang: str = typer.Option(None, "--lang", "-l", help="Comment language: zh | en (default from config)"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+) -> None:
+    """Run lightweight, rule-based checks on a document.
+
+    Finds protected regions (citations, formulas, refs), overly long
+    sentences, and other quick heuristics. No AI/LLM needed.
+    """
+    from .academic import build_academic_structure, SectionKind
+    from .config import load_config
+    from .review import quick_check
+    from docx_revisions import RevisionDocument
+
+    if lang is None:
+        lang = load_config().comment_language
+
+    paragraphs = _read_paragraphs_for_check(input_file)
+    paragraphs_meta = _read_paragraphs_with_meta(input_file)
+    structure = build_academic_structure(paragraphs_meta)
+    findings_list = quick_check(paragraphs, lang=lang)
+
+    rdoc = RevisionDocument(input_file)
+    tracked_changes_count = len(rdoc.track_changes)
+
+    comments_count = 0
+    try:
+        for rel in rdoc.document.part.rels.values():
+            if rel.reltype.endswith('/comments'):
+                comments_xml = rel.target_part.blob
+                comments_count = comments_xml.count(b"<w:comment ") + comments_xml.count(b"<w:comment>")
+                break
+    except Exception:
+        comments_count = 0
+
+    warnings: list[str] = []
+    errors: list[str] = []
+    sections_found = sorted({ap.section.value for ap in structure})
+
+    if SectionKind.REFERENCES.value in sections_found:
+        warnings.append("References section detected; academic review should skip bibliography edits.")
+
+    protected_modifications = [r for r in findings_list if r.kind == "protected_region"]
+    if protected_modifications:
+        warnings.append(f"Detected {len(protected_modifications)} protected regions that should remain unchanged.")
+
+    # Build protection summary
+    from collections import Counter as _Counter
+    protected_paragraphs = [ap for ap in structure if ap.is_protected]
+    all_span_kinds = _Counter(s.kind for ap in structure for s in ap.protected_spans)
+    protection_summary = {
+        "protected_paragraphs": len(protected_paragraphs),
+        "protected_span_counts": dict(all_span_kinds.most_common()),
+        "skipped_sections": [s for s in sections_found if s in ("references", "appendix")],
+    }
+
+    # Overall status
+    if errors:
+        status = "error"
+    elif warnings:
+        status = "warning"
+    else:
+        status = "ok"
+
+    health = {
+        "status": status,
+        "tracked_changes_count": tracked_changes_count,
+        "comments_count": comments_count,
+        "warning_count": len(warnings),
+        "finding_count": len(findings_list),
+        "warnings": warnings,
+        "errors": errors,
+    }
+    findings = [{"paragraph_index": r.paragraph_index, "kind": r.kind, "message": r.message} for r in findings_list]
+    payload = {
+        "findings": findings,
+        "health": health,
+        "sections_found": sections_found,
+        "protection": protection_summary,
+    }
+
+    if json_output:
+        print(json_mod.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        # Overall status line
+        if status == "ok":
+            console.print("[bold green]Status: OK[/bold green] — no issues found.")
+        elif status == "warning":
+            console.print(f"[bold yellow]Status: WARNING[/bold yellow] — {len(warnings)} warning(s), {len(findings)} finding(s)")
+        else:
+            console.print(f"[bold red]Status: ERROR[/bold red] — {len(errors)} error(s)")
+
+        if findings:
+            console.print()
+            table = Table(show_lines=False)
+            table.add_column("Para#", style="dim", width=6)
+            table.add_column("Kind", width=18)
+            table.add_column("Message", min_width=40)
+            for r in findings:
+                table.add_row(str(r["paragraph_index"]), r["kind"], r["message"][:100])
+            console.print(table)
+            console.print(f"\nFindings: {len(findings)}")
+
+        # Protection summary
+        if all_span_kinds:
+            console.print()
+            console.print("[bold]Protected content:[/bold]")
+            console.print(f"  {len(protected_paragraphs)} fully-protected paragraph(s)")
+            for kind, cnt in all_span_kinds.most_common():
+                console.print(f"  {kind}: {cnt} span(s)")
+
+        if warnings:
+            console.print()
+            console.print("[bold yellow]Warnings:[/bold yellow]")
+            for w in warnings:
+                console.print(f"  - {w}")
+        if errors:
+            console.print()
+            console.print("[bold red]Errors:[/bold red]")
+            for e in errors:
+                console.print(f"  - {e}")
+
+
+# ---------------------------------------------------------------------------
+# Review display helpers
+# ---------------------------------------------------------------------------
+
+def _print_review_run_summary(result, mode: str) -> None:
+    """Print human-readable summary after review --run completes."""
+    skipped_count = len(result.protection_warnings)
+    not_found_count = result.apply_stats.not_found_changes
+    drift_count = result.apply_stats.drifted_changes
+    console.print()
+    console.print("[bold green]Review complete.[/bold green]")
+    console.print()
+    console.print(f"  [bold]Mode:[/bold]      {mode}")
+    console.print(f"  [bold]Changes:[/bold]   {result.change_count} edits across {result.paragraphs_changed} paragraphs")
+    if skipped_count:
+        console.print(f"  [bold]Skipped:[/bold]   {skipped_count} edit(s) filtered (protected content)")
+    if drift_count:
+        console.print(f"  [bold]Drifted:[/bold]   {drift_count} edit(s) skipped because the paragraph anchor/hash no longer matched")
+    if not_found_count:
+        console.print(f"  [bold]Unmatched:[/bold] {not_found_count} edit(s) could not be applied because the original text was not found")
+    console.print()
+    console.print("[bold]Artifacts:[/bold]")
+    console.print(f"  1. {Path(result.reviewed_path).name:<40} Track Changes + comments — open in Word")
+    console.print(f"  2. {Path(result.clean_path).name:<40} All changes accepted — clean final version")
+    console.print(f"  3. {Path(result.report_path).name:<40} Machine-readable report (JSON)")
+    console.print()
+    console.print("[dim]Next: open the .reviewed.docx in Word → Review → All Markup → Accept / Reject each change.[/dim]")
+
+
+def _print_review_preflight(plan, input_file: str) -> None:
+    """Print human-readable preflight summary for review (no --run)."""
+    from collections import Counter
+
+    console.print()
+    console.print(f"[bold]Preflight — review plan for[/bold] {Path(input_file).name}")
+    console.print()
+    console.print(f"  [bold]Mode:[/bold]       {plan.mode}")
+    console.print(f"  [bold]Language:[/bold]   {plan.lang}")
+    console.print(f"  [bold]Paragraphs:[/bold] {plan.total_paragraphs} total, {plan.reviewable_paragraphs} reviewable, {plan.skipped_paragraphs} skipped")
+    console.print(f"  [bold]Sections:[/bold]   {', '.join(plan.sections_found)}")
+
+    cat_counts = Counter(item.category for item in plan.items
+                       if item.severity not in ("信息", "Info"))
+    if cat_counts:
+        console.print()
+        console.print("[bold]Review focus:[/bold]")
+        for cat, cnt in cat_counts.most_common():
+            console.print(f"  {cat}: {cnt} items")
+
+    console.print()
+    console.print(f"Total review items: {len(plan.items)}")
+
+    if plan.items:
+        table = Table(show_lines=False)
+        table.add_column("Para#", style="dim", width=6)
+        table.add_column("Section", width=16)
+        table.add_column("Category", width=20)
+        table.add_column("Severity", width=8)
+        for item in plan.items[:30]:
+            table.add_row(str(item.paragraph_index), item.section, item.category, item.severity)
+        console.print(table)
+        if len(plan.items) > 30:
+            console.print(f"[dim]... and {len(plan.items) - 30} more items[/dim]")
+
+    console.print()
+    console.print("[dim]To run the full review: add --run to call Claude and generate artifacts.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for review/inspect/check
+# ---------------------------------------------------------------------------
+
+def _read_paragraphs_with_meta(doc_path: str) -> list[dict]:
+    """Read paragraphs with metadata (style, heading/list flags) for academic analysis."""
+    from docx_revisions import RevisionDocument
+
+    rdoc = RevisionDocument(doc_path)
+    paragraphs = []
+    for i, para in enumerate(rdoc.paragraphs):
+        text = para.accepted_text
+        style_name = ""
+        try:
+            style_name = para.style.name if para.style else ""
+        except Exception:
+            pass
+        style_lower = style_name.lower()
+        paragraphs.append({
+            "index": i,
+            "text": text,
+            "style": style_name,
+            "is_heading": any(kw in style_lower for kw in ("heading", "title", "subtitle")),
+            "is_list": any(kw in style_lower for kw in ("list", "bullet", "number")),
+        })
+    return paragraphs
+
+
+def _read_paragraphs_for_check(doc_path: str) -> list[dict]:
+    """Read paragraphs (index + text only) for lightweight checks."""
+    from docx_revisions import RevisionDocument
+
+    rdoc = RevisionDocument(doc_path)
+    return [{"index": i, "text": para.accepted_text} for i, para in enumerate(rdoc.paragraphs)]
 
 
 if __name__ == "__main__":

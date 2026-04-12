@@ -1,0 +1,12 @@
+[
+  {
+    "paragraph_index": 4,
+    "changes": [
+      {
+        "original": "这个数字说明我们的服务质量还是比较好的",
+        "revised": "这一结果体现了团队在服务质量方面的稳定表现",
+        "reason": "Reviewer note: use a more formal and defensible expression."
+      }
+    ]
+  }
+]

@@ -21,6 +21,9 @@ class Config:
     # apply defaults
     add_comments: bool = True
 
+    # academic review defaults
+    comment_language: str = "zh"  # "zh" or "en"
+
 
 def load_config() -> Config:
     """Load config from ~/.redpen.toml, falling back to defaults."""
@@ -36,5 +39,7 @@ def load_config() -> Config:
         cfg.author = default["author"]
     if "add_comments" in default:
         cfg.add_comments = default["add_comments"]
+    if "comment_language" in default:
+        cfg.comment_language = default["comment_language"]
 
     return cfg
