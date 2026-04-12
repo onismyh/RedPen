@@ -393,8 +393,8 @@ def review(
             print(json_mod.dumps(edits, ensure_ascii=False, indent=2))
             return
 
-        # Apply edits as tracked changes
-        from .revision_writer import apply_tracked_changes, ParagraphEdit, TextChange
+        # Apply edits as tracked changes (protection-aware)
+        from .revision_writer import apply_tracked_changes_protected, ParagraphEdit, TextChange
         from .comment_writer import add_comments_to_edits
 
         parsed_edits = []
@@ -421,7 +421,7 @@ def review(
         out_path = output or str(Path(input_file).with_suffix("").with_name(
             Path(input_file).stem + ".reviewed.docx"
         ))
-        rdoc = apply_tracked_changes(input_file, parsed_edits, author="Claude")
+        rdoc, protection_warnings = apply_tracked_changes_protected(input_file, parsed_edits, author="Claude")
         doc = rdoc.document
         add_comments_to_edits(doc, list(doc.paragraphs), parsed_edits, author="Claude")
         rdoc.save(out_path)
@@ -450,6 +450,7 @@ def review(
             "paragraph_count": len(paragraphs),
             "paragraphs_changed": len(parsed_edits),
             "model": model or "",
+            "protection_warnings": protection_warnings,
         }
         report_path.write_text(
             json_mod.dumps(report, ensure_ascii=False, indent=2),
@@ -563,30 +564,79 @@ def check(
     Finds protected regions (citations, formulas, refs), overly long
     sentences, and other quick heuristics. No AI/LLM needed.
     """
+    from .academic import build_academic_structure, SectionKind
     from .config import load_config
     from .review import quick_check
+    from docx_revisions import RevisionDocument
 
     if lang is None:
         lang = load_config().comment_language
 
     paragraphs = _read_paragraphs_for_check(input_file)
+    paragraphs_meta = _read_paragraphs_with_meta(input_file)
+    structure = build_academic_structure(paragraphs_meta)
     results = quick_check(paragraphs, lang=lang)
 
+    rdoc = RevisionDocument(input_file)
+    tracked_changes_count = len(rdoc.track_changes)
+
+    comments_count = 0
+    try:
+        for rel in rdoc.document.part.rels.values():
+            if rel.reltype.endswith('/comments'):
+                comments_xml = rel.target_part.blob
+                comments_count = comments_xml.count(b"<w:comment ") + comments_xml.count(b"<w:comment>")
+                break
+    except Exception:
+        comments_count = 0
+
+    warnings: list[str] = []
+    errors: list[str] = []
+    sections_found = sorted({ap.section.value for ap in structure})
+
+    if SectionKind.REFERENCES.value in sections_found:
+        warnings.append("References section detected; academic review should skip bibliography edits.")
+
+    protected_modifications = [r for r in results if r.kind == "protected_region"]
+    if protected_modifications:
+        warnings.append(f"Detected {len(protected_modifications)} protected regions that should remain unchanged.")
+
+    health = {
+        "tracked_changes_count": tracked_changes_count,
+        "comments_count": comments_count,
+        "warnings": warnings,
+        "errors": errors,
+    }
+    findings = [{"paragraph_index": r.paragraph_index, "kind": r.kind, "message": r.message} for r in results]
+    payload = {
+        "findings": findings,
+        "health": health,
+        "sections_found": sections_found,
+    }
+
     if json_output:
-        items = [{"paragraph_index": r.paragraph_index, "kind": r.kind, "message": r.message} for r in results]
-        print(json_mod.dumps(items, ensure_ascii=False, indent=2))
+        print(json_mod.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        if not results:
+        if not findings and not warnings and not errors:
             console.print("[green]No issues found.[/green]")
             return
         table = Table(show_lines=False)
         table.add_column("Para#", style="dim", width=6)
         table.add_column("Kind", width=18)
         table.add_column("Message", min_width=40)
-        for r in results:
-            table.add_row(str(r.paragraph_index), r.kind, r.message[:100])
-        console.print(table)
-        console.print(f"\nTotal: {len(results)} findings")
+        for r in findings:
+            table.add_row(str(r["paragraph_index"]), r["kind"], r["message"][:100])
+        if findings:
+            console.print(table)
+            console.print(f"\nTotal: {len(findings)} findings")
+        if warnings:
+            console.print("\n[bold yellow]Warnings[/bold yellow]")
+            for w in warnings:
+                console.print(f"- {w}")
+        if errors:
+            console.print("\n[bold red]Errors[/bold red]")
+            for e in errors:
+                console.print(f"- {e}")
 
 
 # ---------------------------------------------------------------------------

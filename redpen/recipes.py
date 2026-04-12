@@ -174,6 +174,30 @@ def academic(
         comment_lang = load_config().comment_language
 
     payload = _build_payload(RECIPES["academic"], Path(input_file).resolve())
+
+    # Section-aware: detect and include academic sections in payload
+    from .academic import build_academic_structure
+    from docx_revisions import RevisionDocument
+
+    rdoc = RevisionDocument(str(Path(input_file).resolve()))
+    paragraphs = []
+    for i, para in enumerate(rdoc.paragraphs):
+        text = para.accepted_text
+        style_name = ""
+        try:
+            style_name = para.style.name if para.style else ""
+        except Exception:
+            pass
+        style_lower = style_name.lower()
+        paragraphs.append({
+            "index": i,
+            "text": text,
+            "style": style_name,
+            "is_heading": any(kw in style_lower for kw in ("heading", "title", "subtitle")),
+        })
+    structure = build_academic_structure(paragraphs)
+    payload["sections"] = sorted({ap.section.value for ap in structure})
+
     payload["comment_language"] = comment_lang
     if comment_lang == "zh":
         payload["prompt"] += " Write all change reasons and comments in Chinese (中文)."

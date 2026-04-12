@@ -137,6 +137,71 @@ def find_and_replace_tracked(
     return rdoc, count
 
 
+def apply_tracked_changes_protected(
+    doc_path: str,
+    edits: list[ParagraphEdit],
+    author: str = "AI Reviewer",
+) -> tuple[RevisionDocument, list[dict]]:
+    """Apply tracked changes with protection-aware filtering.
+
+    Before applying each change, checks whether the original or revised text
+    would modify a protected span (citation, formula, figure ref, etc.).
+    Changes that alter protected spans are skipped and logged.
+
+    Returns (document, list_of_skipped_warnings).
+    """
+    from .academic import find_protected_spans
+
+    rdoc = RevisionDocument(doc_path)
+    warnings: list[dict] = []
+
+    for edit in edits:
+        idx = edit.paragraph_index
+        if idx < 0 or idx >= len(rdoc.paragraphs):
+            continue
+
+        para = rdoc.paragraphs[idx]
+        para_text = para.accepted_text
+        protected = find_protected_spans(para_text)
+
+        for change in edit.changes:
+            if change.original == change.revised:
+                continue
+
+            # Check if this change would modify a protected span
+            skip = False
+            if protected:
+                orig_pos = para_text.find(change.original)
+                if orig_pos >= 0:
+                    orig_end = orig_pos + len(change.original)
+                    for span in protected:
+                        # If the change region overlaps a protected span
+                        if orig_pos < span.end and orig_end > span.start:
+                            # Verify the protected text is preserved in revised
+                            if span.text not in change.revised:
+                                skip = True
+                                warnings.append({
+                                    "paragraph_index": idx,
+                                    "kind": "protected_span_modified",
+                                    "protected_text": span.text,
+                                    "protected_kind": span.kind,
+                                    "original": change.original[:80],
+                                    "revised": change.revised[:80],
+                                })
+                                break
+
+            if not skip:
+                _replace_tracked_with_format(
+                    para,
+                    search_text=change.original,
+                    replace_text=change.revised,
+                    author=author,
+                )
+
+    _enable_markup_view(rdoc)
+    return rdoc, warnings
+
+
 def accept_all(doc_path: str) -> RevisionDocument:
     """Accept all tracked changes in a document."""
     rdoc = RevisionDocument(doc_path)
