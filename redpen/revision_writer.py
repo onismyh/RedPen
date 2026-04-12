@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 
 from lxml import etree
 from docx.oxml.ns import qn
@@ -52,6 +53,8 @@ class ParagraphEdit:
 
     paragraph_index: int
     changes: list[TextChange]
+    paragraph_anchor: str | None = None
+    paragraph_text_hash: str | None = None
 
 
 @dataclass
@@ -62,7 +65,33 @@ class ApplyStats:
     applied_changes: int = 0
     skipped_changes: int = 0
     not_found_changes: int = 0
+    drifted_changes: int = 0
     applied_paragraph_indexes: set[int] | None = None
+
+
+def compute_paragraph_text_hash(text: str) -> str:
+    """Stable hash for paragraph text anchoring."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _paragraph_drift_warning(edit: ParagraphEdit, para_text: str) -> dict | None:
+    """Return a warning if optional anchor/hash metadata disagrees with live text."""
+    if edit.paragraph_anchor and edit.paragraph_anchor not in para_text:
+        return {
+            "kind": "paragraph_anchor_mismatch",
+            "paragraph_index": edit.paragraph_index,
+            "paragraph_anchor": edit.paragraph_anchor[:80],
+        }
+
+    if edit.paragraph_text_hash and edit.paragraph_text_hash != compute_paragraph_text_hash(para_text):
+        return {
+            "kind": "paragraph_text_hash_mismatch",
+            "paragraph_index": edit.paragraph_index,
+            "expected_hash": edit.paragraph_text_hash,
+            "actual_hash": compute_paragraph_text_hash(para_text),
+        }
+
+    return None
 
 
 def _replace_tracked_with_format(para, search_text: str, replace_text: str, author: str) -> int:
@@ -96,26 +125,69 @@ def apply_tracked_changes(
     using the revision tracking API (produces <w:del> + <w:ins>).
     Original formatting (bold, italic, font, color) is preserved.
     """
+    rdoc, _, _, _ = apply_tracked_changes_checked(doc_path, edits, author=author)
+    return rdoc
+
+
+
+def apply_tracked_changes_checked(
+    doc_path: str,
+    edits: list[ParagraphEdit],
+    author: str = "AI Reviewer",
+) -> tuple[RevisionDocument, list[dict], ApplyStats, list[ParagraphEdit]]:
+    """Apply tracked changes with paragraph drift detection but no protected-span filtering."""
     rdoc = RevisionDocument(doc_path)
+    warnings: list[dict] = []
+    applied_changes_by_paragraph: dict[int, list[TextChange]] = {}
+    stats = ApplyStats(
+        proposed_changes=sum(len(edit.changes) for edit in edits),
+        applied_paragraph_indexes=set(),
+    )
 
     for edit in edits:
         idx = edit.paragraph_index
         if idx < 0 or idx >= len(rdoc.paragraphs):
+            stats.not_found_changes += len(edit.changes)
             continue
 
         para = rdoc.paragraphs[idx]
+        para_text = para.accepted_text
+        drift_warning = _paragraph_drift_warning(edit, para_text)
+        if drift_warning is not None:
+            warnings.append(drift_warning)
+            stats.drifted_changes += len(edit.changes)
+            continue
+
         for change in edit.changes:
             if change.original == change.revised:
                 continue
-            _replace_tracked_with_format(
+            applied = _replace_tracked_with_format(
                 para,
                 search_text=change.original,
                 replace_text=change.revised,
                 author=author,
             )
+            if applied > 0:
+                stats.applied_changes += applied
+                assert stats.applied_paragraph_indexes is not None
+                stats.applied_paragraph_indexes.add(idx)
+                applied_changes_by_paragraph.setdefault(idx, []).append(change)
+            else:
+                stats.not_found_changes += 1
 
     _enable_markup_view(rdoc)
-    return rdoc
+    applied_edits = [
+        ParagraphEdit(
+            paragraph_index=idx,
+            changes=changes,
+            paragraph_anchor=next((e.paragraph_anchor for e in edits if e.paragraph_index == idx), None),
+            paragraph_text_hash=next((e.paragraph_text_hash for e in edits if e.paragraph_index == idx), None),
+        )
+        for idx, changes in sorted(applied_changes_by_paragraph.items())
+        if changes
+    ]
+    return rdoc, warnings, stats, applied_edits
+
 
 
 def find_and_replace_tracked(
@@ -179,6 +251,12 @@ def apply_tracked_changes_protected(
 
         para = rdoc.paragraphs[idx]
         para_text = para.accepted_text
+        drift_warning = _paragraph_drift_warning(edit, para_text)
+        if drift_warning is not None:
+            warnings.append(drift_warning)
+            stats.drifted_changes += len(edit.changes)
+            continue
+
         protected = find_protected_spans(para_text)
 
         for change in edit.changes:

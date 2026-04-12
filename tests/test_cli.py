@@ -87,3 +87,32 @@ def test_apply_rejects_invalid_json_text(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "Invalid JSON" in result.stdout
+
+
+def test_apply_skips_drifted_anchor(tmp_path: Path) -> None:
+    doc = copy_example("sample.docx", tmp_path)
+    out = tmp_path / "drifted.docx"
+    edits = json.dumps(
+        [
+            {
+                "paragraph_index": 1,
+                "paragraph_anchor": "不存在的锚点",
+                "changes": [
+                    {
+                        "original": "在过去的一个季度里面",
+                        "revised": "本季度内",
+                        "reason": "test drift",
+                    }
+                ],
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    result = runner.invoke(app, ["apply", str(doc), edits, "-o", str(out)])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Skipped 1 change(s) due to paragraph drift" in result.stdout
+    show_result = runner.invoke(app, ["show", str(out), "--json"])
+    assert show_result.exit_code == 0
+    assert json.loads(show_result.stdout) == []

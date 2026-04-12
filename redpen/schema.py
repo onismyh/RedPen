@@ -39,6 +39,20 @@ def parse_edit_payload(data: object) -> list[ParagraphEdit]:
     for item_index, raw_item in enumerate(data):
         item = _expect_mapping(raw_item, f"Edit item #{item_index}")
         paragraph_index = _expect_int(item.get("paragraph_index"), f"Edit item #{item_index}.paragraph_index")
+        paragraph_anchor = item.get("paragraph_anchor")
+        if paragraph_anchor is not None:
+            paragraph_anchor = _expect_string(
+                paragraph_anchor,
+                f"Edit item #{item_index}.paragraph_anchor",
+                allow_empty=False,
+            )
+        paragraph_text_hash = item.get("paragraph_text_hash")
+        if paragraph_text_hash is not None:
+            paragraph_text_hash = _expect_string(
+                paragraph_text_hash,
+                f"Edit item #{item_index}.paragraph_text_hash",
+                allow_empty=False,
+            )
 
         raw_changes = item.get("changes")
         if not isinstance(raw_changes, list):
@@ -69,7 +83,14 @@ def parse_edit_payload(data: object) -> list[ParagraphEdit]:
             changes.append(TextChange(original=original, revised=revised, reason=reason))
 
         if changes:
-            edits.append(ParagraphEdit(paragraph_index=paragraph_index, changes=changes))
+            edits.append(
+                ParagraphEdit(
+                    paragraph_index=paragraph_index,
+                    changes=changes,
+                    paragraph_anchor=paragraph_anchor,
+                    paragraph_text_hash=paragraph_text_hash,
+                )
+            )
 
     return edits
 
@@ -78,17 +99,20 @@ def paragraph_edits_to_payload(edits: Sequence[ParagraphEdit]) -> list[dict]:
     """Convert normalized ParagraphEdit objects back into JSON-serializable payloads."""
     payload: list[dict] = []
     for edit in edits:
-        payload.append(
-            {
-                "paragraph_index": edit.paragraph_index,
-                "changes": [
-                    {
-                        "original": change.original,
-                        "revised": change.revised,
-                        "reason": change.reason,
-                    }
-                    for change in edit.changes
-                ],
-            }
-        )
+        payload_item = {
+            "paragraph_index": edit.paragraph_index,
+            "changes": [
+                {
+                    "original": change.original,
+                    "revised": change.revised,
+                    "reason": change.reason,
+                }
+                for change in edit.changes
+            ],
+        }
+        if edit.paragraph_anchor is not None:
+            payload_item["paragraph_anchor"] = edit.paragraph_anchor
+        if edit.paragraph_text_hash is not None:
+            payload_item["paragraph_text_hash"] = edit.paragraph_text_hash
+        payload.append(payload_item)
     return payload

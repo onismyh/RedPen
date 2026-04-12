@@ -94,12 +94,14 @@ def run_review(
             "edits_applied": apply_stats.applied_changes,
             "edits_skipped": apply_stats.skipped_changes,
             "edits_not_found": apply_stats.not_found_changes,
+            "edits_drifted": apply_stats.drifted_changes,
         },
         "safety": {
             "protected_paragraphs": protected_count,
             "protected_span_counts": span_kinds,
             "skipped_sections": [s for s in sections if s in ("references", "appendix")],
             "protection_warnings": protection_warnings,
+            "drift_warnings": [w for w in protection_warnings if w.get("kind") in {"paragraph_anchor_mismatch", "paragraph_text_hash_mismatch"}],
         },
     }
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -155,7 +155,7 @@ def apply(
             {"original": "old", "revised": "new", "reason": "why"}
         ]}]
     """
-    from .revision_writer import apply_tracked_changes
+    from .revision_writer import apply_tracked_changes_checked
     from .comment_writer import add_comments_to_edits
     from .schema import EditValidationError, parse_edit_payload
 
@@ -189,17 +189,21 @@ def apply(
         raise typer.Exit(0)
 
     out_path = _resolve_output(input_file, output)
-    rdoc = apply_tracked_changes(input_file, edits, author=author)
+    rdoc, apply_warnings, apply_stats, applied_edits = apply_tracked_changes_checked(input_file, edits, author=author)
 
     if comment:
         doc = rdoc.document
         paragraphs = list(doc.paragraphs)
-        add_comments_to_edits(doc, paragraphs, edits, author=author)
+        add_comments_to_edits(doc, paragraphs, applied_edits, author=author)
 
     rdoc.save(out_path)
 
-    total = sum(len(e.changes) for e in edits)
-    console.print(f"Applied {total} tracked changes across {len(edits)} paragraphs -> {out_path}")
+    total = apply_stats.applied_changes
+    console.print(f"Applied {total} tracked changes across {len(apply_stats.applied_paragraph_indexes or set())} paragraphs -> {out_path}")
+    if apply_stats.drifted_changes:
+        console.print(f"[yellow]Skipped {apply_stats.drifted_changes} change(s) due to paragraph drift (anchor/hash mismatch).[/yellow]")
+    if apply_stats.not_found_changes:
+        console.print(f"[yellow]Could not apply {apply_stats.not_found_changes} change(s) because the original text was not found.[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +664,7 @@ def _print_review_run_summary(result, mode: str) -> None:
     """Print human-readable summary after review --run completes."""
     skipped_count = len(result.protection_warnings)
     not_found_count = result.apply_stats.not_found_changes
+    drift_count = result.apply_stats.drifted_changes
     console.print()
     console.print("[bold green]Review complete.[/bold green]")
     console.print()
@@ -667,6 +672,8 @@ def _print_review_run_summary(result, mode: str) -> None:
     console.print(f"  [bold]Changes:[/bold]   {result.change_count} edits across {result.paragraphs_changed} paragraphs")
     if skipped_count:
         console.print(f"  [bold]Skipped:[/bold]   {skipped_count} edit(s) filtered (protected content)")
+    if drift_count:
+        console.print(f"  [bold]Drifted:[/bold]   {drift_count} edit(s) skipped because the paragraph anchor/hash no longer matched")
     if not_found_count:
         console.print(f"  [bold]Unmatched:[/bold] {not_found_count} edit(s) could not be applied because the original text was not found")
     console.print()

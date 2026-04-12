@@ -248,6 +248,43 @@ def test_review_run_reports_unmatched_edits(tmp_path: Path, monkeypatch) -> None
     assert payload["summary"]["edits_proposed"] == 1
     assert payload["summary"]["edits_applied"] == 0
     assert payload["summary"]["edits_not_found"] == 1
+    assert payload["summary"]["edits_drifted"] == 0
+
+
+def test_review_run_reports_drifted_edits(tmp_path: Path, monkeypatch) -> None:
+    doc = copy_example("academic_paper.docx", tmp_path)
+
+    def fake_generate(paragraphs, mode, lang, model=None):
+        return [
+            {
+                "paragraph_index": 2,
+                "paragraph_anchor": "missing anchor text",
+                "changes": [
+                    {
+                        "original": "Recent large language models (LLMs) have improved many NLP tasks.",
+                        "revised": "Recent large language models (LLMs) have substantially improved many NLP tasks.",
+                        "reason": "drifted",
+                    }
+                ],
+            }
+        ]
+
+    monkeypatch.setattr("redpen.review.generate_edits_with_claude", fake_generate)
+
+    result = runner.invoke(
+        app,
+        ["review", str(doc), "--mode", "academic-polish", "--lang", "zh", "--run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Drifted:" in result.output
+    reviewed_report = tmp_path / "academic_paper.reviewed.report.json"
+    payload = json.loads(reviewed_report.read_text(encoding="utf-8"))
+    assert payload["summary"]["edits_proposed"] == 1
+    assert payload["summary"]["edits_applied"] == 0
+    assert payload["summary"]["edits_drifted"] == 1
+    assert payload["summary"]["edits_not_found"] == 0
+    assert payload["safety"]["drift_warnings"]
 
 
 def test_review_run_uses_protection_aware_apply(tmp_path: Path, monkeypatch) -> None:
